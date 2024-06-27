@@ -10,7 +10,8 @@ use rp2040_hal as hal;
 
 use defmt::*;
 use defmt_rtt as _;
-use embedded_hal::digital::OutputPin;
+use embedded_hal::digital::{InputPin, OutputPin};
+use embedded_hal_0_2::adc::OneShot;
 use hal::{
     clocks::{init_clocks_and_plls, Clock},
     pac,
@@ -18,17 +19,12 @@ use hal::{
     watchdog::Watchdog,
 };
 
-/// The linker will place this boot block at the start of our program image. We
-/// need this to help the ROM bootloader get our code up and running.
-/// Note: This boot block is not necessary when using a rp-hal based BSP
-/// as the BSPs already perform this step.
 #[link_section = ".boot2"]
 #[used]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
 
 #[rp2040_hal::entry]
 fn main() -> ! {
-    info!("Program start");
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
@@ -56,15 +52,99 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    let mut led_pin = pins.gpio25.into_push_pull_output();
+    // spi_init(EPD_SPI_PORT, 8000 * 1000);
+    // gpio_set_function(EPD_CLK_PIN, GPIO_FUNC_SPI);
+    // gpio_set_function(EPD_MOSI_PIN, GPIO_FUNC_SPI);
+    // DEV_GPIO_Mode(EPD_RST_PIN, 1);
+    // DEV_GPIO_Mode(EPD_DC_PIN, 1);
+    // DEV_GPIO_Mode(EPD_CS_PIN, 1);
+    // DEV_GPIO_Mode(EPD_BUSY_PIN, 0);
+    //     #define EPD_POWER_EN    16
+    // DEV_GPIO_Mode(EPD_POWER_EN, 1);
+    // DEV_Digital_Write(EPD_POWER_EN, 1);	// EPD power on
+    // DEV_Digital_Write(EPD_CS_PIN, 1);
 
-    info!("init done!");
+    // spi_init(SD_SPI_PORT, 12500 * 1000);
+    // gpio_set_function(SD_CLK_PIN, GPIO_FUNC_SPI);
+    // gpio_set_function(SD_MOSI_PIN, GPIO_FUNC_SPI);
+    // gpio_set_function(SD_MISO_PIN, GPIO_FUNC_SPI);
+    // DEV_GPIO_Mode(SD_CS_PIN, 1);
+
+    // i2c_init(RTC_I2C_PORT, 100 * 1000);
+    // gpio_set_function(RTC_SDA, GPIO_FUNC_I2C);
+    // gpio_set_function(RTC_SCL, GPIO_FUNC_I2C);
+
+    // RTC alarm (low means it triggered)
+    let mut rtc_alarm = pins.gpio6.into_pull_up_input();
+
+    // Set up ADC, which is used to read the battery voltage.
+    let mut adc = hal::Adc::new(pac.ADC, &mut pac.RESETS);
+    let mut vbat_adc = hal::adc::AdcPin::new(pins.gpio29).unwrap();
+
+    // Activity LED (red).
+    let mut activity_led = pins.gpio25.into_push_pull_output();
+
+    // Power LED (green).
+    let mut power_led = pins.gpio26.into_push_pull_output();
+
+    // Battery power control (high is enabled; low turns off the power).
+    let mut battery_enable = pins.gpio18.into_push_pull_output();
+
+    // User button (low is button pressed, or the auto-switch is enabled).
+    let mut user_button = pins.gpio19.into_pull_up_input();
+
+    // Battery charging indicator (low is charging; high is not charging).
+    let mut charge_state = pins.gpio17.into_pull_up_input();
+
+    // USB bus power (high means there is power).
+    let mut vbus_state = pins.gpio24.into_floating_input();
+
+    activity_led.set_low().unwrap();
+    power_led.set_low().unwrap();
+
+    // Connect the battery.
+    battery_enable.set_high().unwrap();
+
+    delay.delay_ms(500);
+    let battery: u32 = adc.read(&mut vbat_adc).unwrap();
+    // Some sort of voltage divider at 3.3V reference, x1000 for mV, using a 12-bit ADC.
+    let voltage = battery * 9; // Waveshare does this to get volts: `3.3 / (1 << 12) * 3`.
+    info!("voltage: {} mV", voltage);
+
+    if vbus_state.is_low().unwrap() {
+        // Running on batteries.
+
+        // TODO: run display; in the meantime, show the red light so we know we are here.
+        activity_led.set_high().unwrap();
+        delay.delay_ms(500);
+    } else {
+        // As long as it is plugged in, just keep looping.
+        while vbus_state.is_high().unwrap() {
+            if charge_state.is_low().unwrap() {
+                // Charging.
+                power_led.set_high().unwrap();
+            } else {
+                // Not charging.
+                power_led.set_low().unwrap();
+            }
+
+            if user_button.is_low().unwrap() {
+                // TODO: also handle RTC when on USB power: `|| rtc_alarm.is_low().unwrap() {`.
+                // TODO: run display; in the meantime, show the red light so we know we are here.
+                activity_led.set_high().unwrap();
+                delay.delay_ms(500);
+                activity_led.set_low().unwrap();
+            }
+
+            delay.delay_ms(200);
+        }
+    }
+
+    // Disconnect the battery.
+    battery_enable.set_low().unwrap();
 
     loop {
-        led_pin.set_high().unwrap();
-        delay.delay_ms(500);
-        led_pin.set_low().unwrap();
-        delay.delay_ms(500);
-        info!("loop done!");
+        // Should be unreachable.
+        delay.delay_ms(1000);
     }
 }
