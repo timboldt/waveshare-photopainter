@@ -2,6 +2,7 @@ use defmt::*;
 use embedded_hal::i2c::I2c;
 
 // NOTE: Borrowed lots of ideas and code snippets from https://github.com/tweedegolf/pcf85063a.
+// Datasheet: https://www.nxp.com/docs/en/data-sheet/PCF85063A.pdf
 
 #[derive(Debug)]
 pub enum Error<E> {

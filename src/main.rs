@@ -22,12 +22,17 @@ use hal::{
     watchdog::Watchdog,
 };
 
+// Minimum power is 3.1V.
+const MIN_BATTERY_MILLIVOLTS: u32 = 3100;
+
 #[link_section = ".boot2"]
 #[used]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
 
 #[rp2040_hal::entry]
 fn main() -> ! {
+    info!("Boot start");
+
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
@@ -54,6 +59,8 @@ fn main() -> ! {
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
+
+    // watchdog_enable(8*1000, 1);    // 8s
 
     // See unrelease create https://github.com/Caemor/epd-waveshare.
     // spi_init(EPD_SPI_PORT, 8000 * 1000);
@@ -92,6 +99,7 @@ fn main() -> ! {
 
     // RTC alarm (low means it triggered)
     let mut rtc_alarm = pins.gpio6.into_pull_up_input();
+    info!("Alarm triggered: {}", rtc_alarm.is_low().unwrap());
 
     // Set up ADC, which is used to read the battery voltage.
     let mut adc = hal::Adc::new(pac.ADC, &mut pac.RESETS);
@@ -122,63 +130,29 @@ fn main() -> ! {
     battery_enable.set_high().unwrap();
 
     delay.delay_ms(500);
-    let battery: u32 = adc.read(&mut vbat_adc).unwrap();
-    // Some sort of voltage divider at 3.3V reference, x1000 for mV, using a 12-bit ADC.
-    let voltage = battery * 9; // Waveshare does this to get volts: `3.3 / (1 << 12) * 3`.
-    info!("voltage: {} mV", voltage);
+    let battery: u16 = adc.read(&mut vbat_adc).unwrap();
+    // Some sort of voltage divider (10x?) at 3.3V reference, x1000 for mV, using a 12-bit ADC.
+    // XXXX for some reason, Waveshare uses a 3x multiplier in their code and it seems to work. Why?
+    let battery_millivolts = battery as u32 * 10 * 3300 / (1 << 12);
 
-    // Time_data Time = {2024-2000, 3, 31, 0, 0, 0};
-    // Time_data alarmTime = Time;
-    // // alarmTime.seconds += 10;
-    // // alarmTime.minutes += 30;
-    // alarmTime.hours +=24;
-    // char isCard = 0;
+    info!("VBUS power: {}", vbus_state.is_high().unwrap());
+    info!("Charging: {}", charge_state.is_low().unwrap());
+    info!("voltage: {} mV", battery_millivolts);
 
-    // printf("Init...\r\n");
-    // if(DEV_Module_Init() != 0) {  // DEV init
-    //     return -1;
+    // let mut temperature_sensor = adc.take_temp_sensor().unwrap();
+    // for i in 0..10 {
+    //     let temp_sens_adc_counts: i64 = adc.read(&mut temperature_sensor).unwrap();
+    //     info!("Temperature: {} cnts", temp_sens_adc_counts);
+    //     let temp_uv = temp_sens_adc_counts * 3300 * 1000 / (1 << 12);
+    //     info!("Temperature: {} uV", temp_uv);
+    //     let temperature = 27 - (temp_uv - 706 * 1000) * 581 / 1000 / 1000;
+    //     info!("Temperature: {}", temperature);
+    //     delay.delay_ms(100);
     // }
 
-    // watchdog_enable(8*1000, 1);    // 8s
-    // DEV_Delay_ms(1000);
-    // PCF85063_init();    // RTC init
     // rtcRunAlarm(Time, alarmTime);  // RTC run alarm
-    // gpio_set_irq_enabled_with_callback(CHARGE_STATE, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, chargeState_callback);
 
-    // if(measureVBAT() < 3.1) {   // battery power is low
-    //     printf("low power ...\r\n");
-    //     PCF85063_alarm_Time_Disable();
-    //     ledLowPower();  // LED flash for Low power
-    //     powerOff(); // BAT off
-    //     return 0;
-    // }
-    // else {
-    //     printf("work ...\r\n");
-    //     ledPowerOn();
-    // }
-
-    // if(!sdTest())
-    // {
-    //     isCard = 1;
-    //     if(Mode == 0)
-    //     {
-    //         sdScanDir();
-    //         file_sort();
-    //     }
-    //     if(Mode == 1)
-    //     {
-    //         sdScanDir();
-    //     }
-    //     if(Mode == 2)
-    //     {
-    //         file_cat();
-    //     }
-
-    // }
-    // else
-    // {
-    //     isCard = 0;
-    // }
+    //  sdScanDir();
 
     // void run_display(Time_data Time, Time_data alarmTime, char hasCard)
     // {
@@ -194,13 +168,28 @@ fn main() -> ! {
     //     rtcRunAlarm(Time, alarmTime);  // RTC run alarm
     // }
 
-    if vbus_state.is_low().unwrap() {
-        // Running on batteries.
+    info!("Init done");
 
-        // TODO: run display; in the meantime, show the red light so we know we are here.
-        activity_led.set_high().unwrap();
-        delay.delay_ms(500);
+    if vbus_state.is_low().unwrap() {
+        info!("Running on batteries");
+
+        if (battery_millivolts > MIN_BATTERY_MILLIVOLTS) {
+            // XXX run display; in the meantime, show the red light so we know we are here.
+            activity_led.set_high().unwrap();
+            delay.delay_ms(500);
+        } else {
+            info!("Low power");
+            // XXX disable alarm
+            for _ in 0..5 {
+                power_led.set_high().unwrap();
+                delay.delay_ms(200);
+                power_led.set_low().unwrap();
+                delay.delay_ms(100);
+            }
+        }
     } else {
+        info!("Running off VBUS power");
+
         // As long as it is plugged in, just keep looping.
         while vbus_state.is_high().unwrap() {
             if charge_state.is_low().unwrap() {
@@ -213,8 +202,9 @@ fn main() -> ! {
 
             if user_button.is_low().unwrap() {
                 // TODO: also handle RTC when on USB power: `|| rtc_alarm.is_low().unwrap() {`.
-                // TODO: run display; in the meantime, show the red light so we know we are here.
+                // xxx run display; in the meantime, show the red light so we know we are here.
                 activity_led.set_high().unwrap();
+                info!("Button pushed");
                 delay.delay_ms(500);
                 activity_led.set_low().unwrap();
             }
