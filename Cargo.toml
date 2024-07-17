@@ -18,6 +18,7 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 rp2040-hal = { version="0.10", features=["rt", "critical-section-impl"] }
 rp2040-boot2 = "0.2"
 fugit = "0.3.7"
+embedded-sdmmc = "0.5.0"
 #defmt-itm = "0.3.0"
 
 # cargo build/run

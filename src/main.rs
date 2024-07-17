@@ -1,6 +1,3 @@
-//! Blinks the LED on a Pico board
-//!
-//! This will blink an LED attached to GP25, which is the pin the Pico uses for the on-board LED.
 #![no_std]
 #![no_main]
 
@@ -12,8 +9,12 @@ use rp2040_hal as hal;
 
 use defmt::*;
 use defmt_rtt as _;
+use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::{InputPin, OutputPin};
+use embedded_hal::spi::SpiDevice;
 use embedded_hal_0_2::adc::OneShot;
+use embedded_sdmmc::filesystem::Mode;
+use embedded_sdmmc::{SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
 use fugit::RateExtU32;
 use hal::{
     clocks::{init_clocks_and_plls, Clock},
@@ -24,6 +25,24 @@ use hal::{
 
 // Minimum power is 3.1V.
 const MIN_BATTERY_MILLIVOLTS: u32 = 3100;
+
+/// A dummy timesource, which is mostly important for creating files.
+#[derive(Default)]
+pub struct DummyTimesource();
+
+impl TimeSource for DummyTimesource {
+    // TODO: Use the RTC instead.
+    fn get_timestamp(&self) -> Timestamp {
+        Timestamp {
+            year_since_1970: 0,
+            zero_indexed_month: 0,
+            zero_indexed_day: 0,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+        }
+    }
+}
 
 #[link_section = ".boot2"]
 #[used]
@@ -51,7 +70,8 @@ fn main() -> ! {
     )
     .unwrap();
 
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+    let mut delay = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+    let mut raw_delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
     let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
@@ -61,26 +81,6 @@ fn main() -> ! {
     );
 
     // watchdog_enable(8*1000, 1);    // 8s
-
-    // See unrelease create https://github.com/Caemor/epd-waveshare.
-    // spi_init(EPD_SPI_PORT, 8000 * 1000);
-    // gpio_set_function(EPD_CLK_PIN, GPIO_FUNC_SPI);
-    // gpio_set_function(EPD_MOSI_PIN, GPIO_FUNC_SPI);
-    // DEV_GPIO_Mode(EPD_RST_PIN, 1);
-    // DEV_GPIO_Mode(EPD_DC_PIN, 1);
-    // DEV_GPIO_Mode(EPD_CS_PIN, 1);
-    // DEV_GPIO_Mode(EPD_BUSY_PIN, 0);
-    //     #define EPD_POWER_EN    16
-    // DEV_GPIO_Mode(EPD_POWER_EN, 1);
-    // DEV_Digital_Write(EPD_POWER_EN, 1);	// EPD power on
-    // DEV_Digital_Write(EPD_CS_PIN, 1);
-
-    // See https://github.com/rp-rs/rp-hal-boards/blob/main/boards/rp-pico/examples/pico_spi_sd_card.rs.
-    // spi_init(SD_SPI_PORT, 12500 * 1000);
-    // gpio_set_function(SD_CLK_PIN, GPIO_FUNC_SPI);
-    // gpio_set_function(SD_MOSI_PIN, GPIO_FUNC_SPI);
-    // gpio_set_function(SD_MISO_PIN, GPIO_FUNC_SPI);
-    // DEV_GPIO_Mode(SD_CS_PIN, 1);
 
     let sda_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio14.reconfigure();
     let scl_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio15.reconfigure();
@@ -95,15 +95,109 @@ fn main() -> ! {
     );
 
     let mut rtc = rtc::PCF85063::new(i2c);
-    rtc.init_device(&mut delay).unwrap();
+    rtc.init_device(&mut raw_delay).unwrap();
 
     // RTC alarm (low means it triggered)
     let mut rtc_alarm = pins.gpio6.into_pull_up_input();
     info!("Alarm triggered: {}", rtc_alarm.is_low().unwrap());
 
+    // See unrelease create https://github.com/Caemor/epd-waveshare.
+    // spi_init(EPD_SPI_PORT, 8000 * 1000);
+    // gpio_set_function(EPD_CLK_PIN, GPIO_FUNC_SPI);
+    // gpio_set_function(EPD_MOSI_PIN, GPIO_FUNC_SPI);
+    // DEV_GPIO_Mode(EPD_RST_PIN, 1);
+    // DEV_GPIO_Mode(EPD_DC_PIN, 1);
+    // DEV_GPIO_Mode(EPD_CS_PIN, 1);
+    // DEV_GPIO_Mode(EPD_BUSY_PIN, 0);
+    //     #define EPD_POWER_EN    16
+    // DEV_GPIO_Mode(EPD_POWER_EN, 1);
+    // DEV_Digital_Write(EPD_POWER_EN, 1);	// EPD power on
+    // DEV_Digital_Write(EPD_CS_PIN, 1);
+
+    //--- SD Card --
+
+    // SD Card SPI pins.
+    let sd_spi_sclk: hal::gpio::Pin<_, hal::gpio::FunctionSpi, hal::gpio::PullNone> =
+        pins.gpio2.reconfigure();
+    let sd_spi_mosi: hal::gpio::Pin<_, hal::gpio::FunctionSpi, hal::gpio::PullNone> =
+        pins.gpio3.reconfigure();
+    let sd_spi_miso: hal::gpio::Pin<_, hal::gpio::FunctionSpi, hal::gpio::PullUp> =
+        pins.gpio4.reconfigure();
+    let sd_spi_cs = pins.gpio5.into_push_pull_output();
+
+    // SD Card SPI device.
+    let sd_spi =
+        hal::spi::Spi::<_, _, _, 8>::new(pac.SPI0, (sd_spi_mosi, sd_spi_miso, sd_spi_sclk));
+    let sd_spi = sd_spi.init(
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+        400.kHz(), // card initialization happens at low baud rate
+        embedded_hal::spi::MODE_0,
+    );
+
+    // SD Card device.
+    let sdcard = SdCard::new(sd_spi, sd_spi_cs, delay);
+    let mut volume_mgr = VolumeManager::new(sdcard, DummyTimesource::default());
+
+    info!("Init SD card controller and retrieve card size...");
+    match volume_mgr.device().num_bytes() {
+        Ok(size) => info!("card size is {} bytes", size),
+        Err(e) => {
+            error!("Error retrieving card size: {}", defmt::Debug2Format(&e));
+        }
+    }
+
+    // Now that the card is initialized, clock can go faster
+    volume_mgr
+        .device()
+        .spi(|spi| spi.set_baudrate(clocks.peripheral_clock.freq(), 16.MHz()));
+
+    info!("Getting Volume 0...");
+    let mut volume = match volume_mgr.get_volume(VolumeIdx(0)) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Error getting volume 0: {}", defmt::Debug2Format(&e));
+            loop {
+                // Should be unreachable.
+                delay.delay_ms(1000);
+            }
+        }
+    };
+
+    // After we have the volume (partition) of the drive we got to open the
+    // root directory:
+    let dir = match volume_mgr.open_root_dir(&volume) {
+        Ok(dir) => dir,
+        Err(e) => {
+            error!("Error opening root dir: {}", defmt::Debug2Format(&e));
+            loop {
+                // Should be unreachable.
+                delay.delay_ms(1000);
+            }
+        }
+    };
+
+    info!("Root directory opened!");
+
+    // This shows how to iterate through the directory and how
+    // to get the file names (and print them in hope they are UTF-8 compatible):
+    volume_mgr
+        .iterate_dir(&volume, &dir, |ent| {
+            info!(
+                "/{}.{}",
+                core::str::from_utf8(ent.name.base_name()).unwrap(),
+                core::str::from_utf8(ent.name.extension()).unwrap()
+            );
+        })
+        .unwrap();
+
+    //--- ADC ---
+
     // Set up ADC, which is used to read the battery voltage.
     let mut adc = hal::Adc::new(pac.ADC, &mut pac.RESETS);
     let mut vbat_adc = hal::adc::AdcPin::new(pins.gpio29).unwrap();
+
+    //--- GPIOs --
 
     // Activity LED (red).
     let mut activity_led = pins.gpio25.into_push_pull_output();
@@ -173,7 +267,7 @@ fn main() -> ! {
     if vbus_state.is_low().unwrap() {
         info!("Running on batteries");
 
-        if (battery_millivolts > MIN_BATTERY_MILLIVOLTS) {
+        if battery_millivolts > MIN_BATTERY_MILLIVOLTS {
             // XXX run display; in the meantime, show the red light so we know we are here.
             activity_led.set_high().unwrap();
             delay.delay_ms(500);
