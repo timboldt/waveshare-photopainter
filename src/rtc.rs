@@ -1,4 +1,7 @@
+use rp2040_hal as hal;
+
 use defmt::*;
+use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::I2c;
 
 // NOTE: Borrowed lots of ideas and code snippets from https://github.com/tweedegolf/pcf85063a.
@@ -9,9 +12,9 @@ pub enum Error<E> {
     /// I2C bus error
     I2C(E),
     /// Invalid input data
-    InvalidInputData,
+    _InvalidInputData,
     /// A time component was out of range
-    ComponentRange,
+    _ComponentRange,
 }
 
 // pub const OFFSET: u8 = 0x02;
@@ -63,7 +66,7 @@ where
         PCF85063 { i2c }
     }
 
-    pub fn init_device(&mut self, delay: &mut cortex_m::delay::Delay) -> Result<(), Error<E>> {
+    pub fn init_device(&mut self, delay: &mut hal::Timer) -> Result<(), Error<E>> {
         self.write_register(REG_CONTROL_1, CONTROL_1_DEVICE_RESET)?;
         delay.delay_ms(500);
         let sec = self.read_register(REG_SECONDS)?;

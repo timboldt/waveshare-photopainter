@@ -11,6 +11,7 @@ use defmt::*;
 use defmt_rtt as _;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::{InputPin, OutputPin};
+use embedded_hal::i2c::I2c;
 use embedded_hal::spi::SpiDevice;
 use embedded_hal_0_2::adc::OneShot;
 use embedded_sdmmc::filesystem::Mode;
@@ -48,6 +49,26 @@ impl TimeSource for DummyTimesource {
 #[used]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
 
+fn init_i2c1<I2C, Pins>(
+    mut pac: pac::Peripherals,
+    clocks: hal::clocks::ClocksManager,
+    pins: hal::gpio::Pins,
+) -> impl embedded_hal::i2c::I2c {
+    let sda_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio14.reconfigure();
+    let scl_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio15.reconfigure();
+
+    let i2c = hal::I2C::i2c1(
+        pac.I2C1,
+        sda_pin,
+        scl_pin,
+        400.kHz(),
+        &mut pac.RESETS,
+        &clocks.peripheral_clock,
+    );
+
+    i2c
+}
+
 #[rp2040_hal::entry]
 fn main() -> ! {
     info!("Boot start");
@@ -71,7 +92,6 @@ fn main() -> ! {
     .unwrap();
 
     let mut delay = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-    let mut raw_delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
     let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
@@ -95,13 +115,13 @@ fn main() -> ! {
     );
 
     let mut rtc = rtc::PCF85063::new(i2c);
-    rtc.init_device(&mut raw_delay).unwrap();
+    rtc.init_device(&mut delay).unwrap();
 
     // RTC alarm (low means it triggered)
     let mut rtc_alarm = pins.gpio6.into_pull_up_input();
     info!("Alarm triggered: {}", rtc_alarm.is_low().unwrap());
 
-    // See unrelease create https://github.com/Caemor/epd-waveshare.
+    // See unreleased crate https://github.com/Caemor/epd-waveshare.
     // spi_init(EPD_SPI_PORT, 8000 * 1000);
     // gpio_set_function(EPD_CLK_PIN, GPIO_FUNC_SPI);
     // gpio_set_function(EPD_MOSI_PIN, GPIO_FUNC_SPI);
