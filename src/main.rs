@@ -3,9 +3,11 @@
 
 mod rtc;
 
+use cortex_m::peripheral;
 use panic_probe as _;
 
 use rp2040_hal as hal;
+use rp2040_hal::pac::RESETS;
 
 use defmt::*;
 use defmt_rtt as _;
@@ -50,19 +52,21 @@ impl TimeSource for DummyTimesource {
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
 
 fn init_i2c1<I2C, Pins>(
-    mut pac: pac::Peripherals,
+    pac: pac::Peripherals,
     clocks: hal::clocks::ClocksManager,
     pins: hal::gpio::Pins,
 ) -> impl embedded_hal::i2c::I2c {
     let sda_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio14.reconfigure();
     let scl_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio15.reconfigure();
 
+    let mut resets = pac.RESETS;
+
     let i2c = hal::I2C::i2c1(
         pac.I2C1,
         sda_pin,
         scl_pin,
         400.kHz(),
-        &mut pac.RESETS,
+        &mut resets,
         &clocks.peripheral_clock,
     );
 
@@ -102,17 +106,19 @@ fn main() -> ! {
 
     // watchdog_enable(8*1000, 1);    // 8s
 
-    let sda_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio14.reconfigure();
-    let scl_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio15.reconfigure();
+    let i2c = init_i2c1::<I2C, PINS>(pac, clocks, pins);
 
-    let i2c = hal::I2C::i2c1(
-        pac.I2C1,
-        sda_pin,
-        scl_pin,
-        400.kHz(),
-        &mut pac.RESETS,
-        &clocks.peripheral_clock,
-    );
+    // let sda_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio14.reconfigure();
+    // let scl_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio15.reconfigure();
+
+    // let i2c = hal::I2C::i2c1(
+    //     pac.I2C1,
+    //     sda_pin,
+    //     scl_pin,
+    //     400.kHz(),
+    //     &mut pac.RESETS,
+    //     &clocks.peripheral_clock,
+    // );
 
     let mut rtc = rtc::PCF85063::new(i2c);
     rtc.init_device(&mut delay).unwrap();
