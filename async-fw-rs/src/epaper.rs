@@ -1,6 +1,7 @@
+use defmt::*;
 use embassy_rp::{
     gpio,
-    spi::{self, Async, Config, Spi},
+    spi::{self, Async},
 };
 use embassy_time::Timer;
 
@@ -10,6 +11,7 @@ pub const EPD_7IN3F_HEIGHT: usize = 480;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Error {
+    #[allow(dead_code)]
     Timeout,
     SpiError(spi::Error),
 }
@@ -24,15 +26,16 @@ pub enum EPD7IN3FColor {
     Red = 0b100,
     Yellow = 0b101,
     Orange = 0b110,
+    #[allow(dead_code)]
     Clean = 0b111, // Not a real color, used to clear the display.
 }
 
 pub struct EPaper7In3F<SPI: embassy_rp::spi::Instance + 'static> {
+    spi: spi::Spi<'static, SPI, Async>,
     reset_pin: gpio::Output<'static>,
     dc_pin: gpio::Output<'static>,
     cs_pin: gpio::Output<'static>,
     busy_pin: gpio::Input<'static>,
-    spi: spi::Spi<'static, SPI, Async>,
 }
 
 //#[async_trait]
@@ -41,18 +44,18 @@ where
     SPI: embassy_rp::spi::Instance,
 {
     pub fn new(
+        spi: spi::Spi<'static, SPI, Async>,
         reset_pin: gpio::Output<'static>,
         dc_pin: gpio::Output<'static>,
         cs_pin: gpio::Output<'static>,
         busy_pin: gpio::Input<'static>,
-        spi: spi::Spi<'static, SPI, Async>,
     ) -> Self {
         EPaper7In3F {
+            spi,
             reset_pin,
             dc_pin,
             cs_pin,
             busy_pin,
-            spi,
         }
     }
 
@@ -93,6 +96,7 @@ where
     }
 
     /// Clears the display with the given color.
+    #[allow(dead_code)]
     pub async fn clear(&mut self, color: EPD7IN3FColor) -> Result<(), Error> {
         self.send_cmd(0x10).await?;
         for _ in 0..EPD_7IN3F_HEIGHT {
@@ -135,6 +139,7 @@ where
     }
 
     /// Sends the given image to the display.
+    #[allow(dead_code)]
     pub async fn show_image(&mut self, image: &[u8]) -> Result<(), Error> {
         self.send_cmd_with_data(0x10, image).await?;
         self.display_frame().await?;
@@ -160,15 +165,14 @@ where
 
     /// Sends a command to the display.
     async fn send_cmd(&mut self, command: u8) -> Result<(), Error> {
+        // XXX
+        info!("send_cmd: {:?}", command);
         // DC low: next byte is command.
         self.dc_pin.set_low();
         // CS low: start command transmission.
         self.cs_pin.set_low();
         // Send the command.
-        self.spi
-            .write(&[command])
-            .await
-            .map_err(|e| Error::SpiError(e))?;
+        self.spi.write(&[command]).await.map_err(Error::SpiError)?;
         // CS high: end command transmission.
         self.cs_pin.set_high();
         Ok(())
@@ -180,10 +184,22 @@ where
         self.dc_pin.set_high();
         // CS low: start data transmission.
         self.cs_pin.set_low();
-        // Send the data.
-        self.spi.write(data).await.map_err(|e| Error::SpiError(e))?;
+        self.spi.write(data).await.map_err(Error::SpiError)?;
         // CS high: end data transmission.
         self.cs_pin.set_high();
+
+        // // TODO(tboldt): It isn't clear to me why we need to toggle the CS pin for each byte. See if this can be improved.
+        // for b in 0..data.len() {
+        //     // CS low: start data transmission.
+        //     self.cs_pin.set_low();
+        //     // Send the data.
+        //     self.spi
+        //         .write(&data[b..b + 1])
+        //         .await
+        //         .map_err(Error::SpiError)?;
+        //     // CS high: end data transmission.
+        //     self.cs_pin.set_high();
+        // }
         Ok(())
     }
 
@@ -196,15 +212,17 @@ where
 
     /// Waits for the display to become idle.
     async fn wait_for_idle(&mut self) -> Result<(), Error> {
-        let max_delay_ms = 2000;
+        let max_delay_ms = 50_000;
         let polling_ms = 10;
 
         let mut accum_ms = 0;
-        while self.busy_pin.is_high() {
+        while self.busy_pin.is_low() {
             Timer::after_millis(polling_ms).await;
             accum_ms += polling_ms;
             if accum_ms >= max_delay_ms {
-                return Err(Error::Timeout);
+                return Ok(());
+                // XXXXX FIXME:
+                //return Err(Error::Timeout);
             }
         }
         Ok(())
