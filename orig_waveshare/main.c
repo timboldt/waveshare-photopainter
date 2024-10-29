@@ -1,5 +1,6 @@
 #include "EPD_Test.h"   // Examples
 #include "run_File.h"
+#include "lib/e-Paper/EPD_7in3f.h" // EPD
 
 #include "led.h"
 #include "waveshare_PCF85063.h" // RTC
@@ -72,9 +73,9 @@ int main(void)
     
     watchdog_enable(8*1000, 1);    // 8s
     DEV_Delay_ms(1000);
-    PCF85063_init();    // RTC init
-    rtcRunAlarm(Time, alarmTime);  // RTC run alarm
-    gpio_set_irq_enabled_with_callback(CHARGE_STATE, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, chargeState_callback);
+    // PCF85063_init();    // RTC init
+    // rtcRunAlarm(Time, alarmTime);  // RTC run alarm
+    // gpio_set_irq_enabled_with_callback(CHARGE_STATE, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, chargeState_callback);
 
     if(measureVBAT() < 3.1) {   // battery power is low
         printf("low power ...\r\n");
@@ -87,29 +88,33 @@ int main(void)
         printf("work ...\r\n");
         ledPowerOn();
     }
+    
+    EPD_7IN3F_Init();   // EPD init
+    EPD_7IN3F_Show7Block();
+    EPD_7IN3F_Sleep();  // EPD sleep
 
-    if(!sdTest()) 
-    {
-        isCard = 1;
-        if(Mode == 0)
-        {
-            sdScanDir();
-            file_sort();
-        }
-        if(Mode == 1)
-        {
-            sdScanDir();
-        }
-        if(Mode == 2)
-        {
-            file_cat();
-        }
+    // if(!sdTest()) 
+    // {
+    //     isCard = 1;
+    //     if(Mode == 0)
+    //     {
+    //         sdScanDir();
+    //         file_sort();
+    //     }
+    //     if(Mode == 1)
+    //     {
+    //         sdScanDir();
+    //     }
+    //     if(Mode == 2)
+    //     {
+    //         file_cat();
+    //     }
         
-    }
-    else 
-    {
+    // }
+    // else 
+    // {
         isCard = 0;
-    }
+    // }
 
     if(!DEV_Digital_Read(VBUS)) {    // no charge state
         run_display(Time, alarmTime, isCard);
