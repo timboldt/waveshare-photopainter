@@ -14,6 +14,9 @@ use {defmt_rtt as _, panic_probe as _};
 
 mod epaper;
 
+// Minimum power is 3.1V.
+const MIN_BATTERY_MILLIVOLTS: u32 = 3100;
+
 bind_interrupts!(struct Irqs {
     ADC_IRQ_FIFO => InterruptHandler;
 });
@@ -55,15 +58,15 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Activity LED: red.
-    let mut led_activity_pin = Output::new(p.PIN_25, Level::Low);
+    let mut activity_led_pin = Output::new(p.PIN_25, Level::Low);
     // Power LED: green.
-    let _led_power_pin = Output::new(p.PIN_26, Level::High);
+    let mut power_led_pin = Output::new(p.PIN_26, Level::High);
     // User button (low is button pressed, or the auto-switch is enabled).
-    let _user_button_pin = Input::new(p.PIN_19, Pull::Up);
+    let user_button_pin = Input::new(p.PIN_19, Pull::Up);
     // Battery power control (high is enabled; low turns off the power).
-    let _battery_enable_pin = Output::new(p.PIN_18, Level::High);
+    let mut battery_enable_pin = Output::new(p.PIN_18, Level::High);
     // Battery charging indicator (low is charging; high is not charging).
-    let _charge_state_pin = Input::new(p.PIN_17, Pull::Up);
+    let charge_state_pin = Input::new(p.PIN_17, Pull::Up);
     // USB bus power (high means there is power).
     let vbus_state_pin = Input::new(p.PIN_24, Pull::None);
     // Mystery pin 23, aka "Power_Mode".
@@ -71,14 +74,8 @@ async fn main(_spawner: Spawner) {
 
     // If USB connected, set up logging over USB.
     if vbus_state_pin.is_high() {
-        // Set up logging over USB.
-        // let _ = embassy_rp::usb::init(
-        //     p.USB,
-        //     p.PIN_20,
-        //     p.PIN_21,
-        //     p.PIN_22,
-        //     embassy_rp::usb::Speed::Full,
-        // );
+        info!("USB power detected.");
+        // TODO(tboldt): Set up logging over USB.
     }
 
     // Set up E-Paper Display
@@ -145,30 +142,63 @@ async fn main(_spawner: Spawner) {
     //    wait for key press
     //    run display
 
-    // epaper.init().await.unwrap();
-    // epaper.show_seven_color_blocks().await.unwrap();
-    // epaper.deep_sleep().await.unwrap();
+    info!("Init done");
 
-    // Loop
+    if vbus_state_pin.is_low() {
+        info!("Running on batteries");
+
+        if battery_voltage() > MIN_BATTERY_MILLIVOLTS {
+            // If the battery has enough power, run the display, and then turn off the power.
+            activity_led_pin.set_high();
+            epaper.init().await.unwrap();
+            epaper.show_seven_color_blocks().await.unwrap();
+            epaper.deep_sleep().await.unwrap();
+            activity_led_pin.set_low();
+        } else {
+            // If the battery has too little power, flash the low power LED, disable the alarm, and turn off the power.
+            info!("Low power");
+            // TODO(tboldt): Disable the alarm, since there is not enough power to wake up.
+            for _ in 0..5 {
+                power_led_pin.set_high();
+                Timer::after(Duration::from_millis(200)).await;
+                power_led_pin.set_low();
+                Timer::after(Duration::from_millis(100)).await;
+            }
+        }
+    } else {
+        info!("Running off VBUS power");
+
+        // As long as it is plugged in, just keep looping.
+        while vbus_state_pin.is_high() {
+            if charge_state_pin.is_low() {
+                // Charging.
+                power_led_pin.set_high();
+            } else {
+                // Not charging.
+                power_led_pin.set_low();
+            }
+
+            // TODO(tboldt): Add proper debouncing.
+            if user_button_pin.is_low() {
+                // TODO: also handle RTC when on USB power: `|| rtc_alarm.is_low().unwrap() {`.
+                info!("Button pushed");
+                activity_led_pin.set_high();
+                epaper.init().await.unwrap();
+                epaper.show_seven_color_blocks().await.unwrap();
+                epaper.deep_sleep().await.unwrap();
+                activity_led_pin.set_low();
+            }
+
+            watchdog.feed();
+            Timer::after(Duration::from_millis(200)).await;
+        }
+    }
+
+    // Disconnect the battery.
+    battery_enable_pin.set_low();
+
     loop {
-        // Log
-        info!("LED On!");
-
-        // Turn LED On
-        led_activity_pin.set_high();
-
-        // Wait 100ms
-        Timer::after(Duration::from_millis(500)).await;
-
-        // Log
-        info!("LED Off!");
-
-        // Turn Led Off
-        led_activity_pin.set_low();
-
-        // Wait 100ms
-        Timer::after(Duration::from_millis(500)).await;
-
-        watchdog.feed();
+        // Should be unreachable.
+        Timer::after(Duration::from_millis(1000)).await;
     }
 }
