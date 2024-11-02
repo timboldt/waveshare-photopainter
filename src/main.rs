@@ -85,8 +85,8 @@ async fn main(_spawner: Spawner) {
     epd_config.frequency = 8_000_000;
     let spi = Spi::new_txonly(p.SPI1, epd_clk, epd_mosi, p.DMA_CH0, epd_config);
 
-    let epd_reset_pin = Output::new(p.PIN_12, Level::High);
-    let epd_dc_pin = Output::new(p.PIN_8, Level::High);
+    let epd_reset_pin = Output::new(p.PIN_12, Level::Low);
+    let epd_dc_pin = Output::new(p.PIN_8, Level::Low);
     let epd_cs_pin = Output::new(p.PIN_9, Level::High);
     let epd_busy_pin = Input::new(p.PIN_13, Pull::None);
     let mut epaper =
@@ -120,7 +120,7 @@ async fn main(_spawner: Spawner) {
 
     // Enable the watchdog timer, in case something goes wrong.
     let mut watchdog = Watchdog::new(p.WATCHDOG);
-    watchdog.start(Duration::from_secs(8));
+    //xxx watchdog.start(Duration::from_secs(8));
 
     Timer::after_millis(1000).await;
 
@@ -144,19 +144,15 @@ async fn main(_spawner: Spawner) {
 
     info!("Init done");
 
-    if vbus_state_pin.is_low() {
-        info!("Running on batteries");
+    let mut show_display = true;
+    let mut button_press_count = 0;
+    'main: loop {
+        let running_on_battery = vbus_state_pin.is_low();
+        info!("Running on battery? {}", running_on_battery);
 
-        if battery_voltage() > MIN_BATTERY_MILLIVOLTS {
-            // If the battery has enough power, run the display, and then turn off the power.
-            activity_led_pin.set_high();
-            epaper.init().await.unwrap();
-            epaper.show_seven_color_blocks().await.unwrap();
-            epaper.deep_sleep().await.unwrap();
-            activity_led_pin.set_low();
-        } else {
-            // If the battery has too little power, flash the low power LED, disable the alarm, and turn off the power.
-            info!("Low power");
+        // If the battery is low, flash the low power LED, disable the alarm, and turn off the power.
+        if running_on_battery && battery_voltage() < MIN_BATTERY_MILLIVOLTS {
+            info!("Battery is low");
             // TODO(tboldt): Disable the alarm, since there is not enough power to wake up.
             for _ in 0..5 {
                 power_led_pin.set_high();
@@ -164,34 +160,46 @@ async fn main(_spawner: Spawner) {
                 power_led_pin.set_low();
                 Timer::after(Duration::from_millis(100)).await;
             }
+            // Exit and power down.
+            break 'main;
         }
-    } else {
-        info!("Running off VBUS power");
 
-        // As long as it is plugged in, just keep looping.
-        while vbus_state_pin.is_high() {
-            if charge_state_pin.is_low() {
-                // Charging.
-                power_led_pin.set_high();
-            } else {
-                // Not charging.
-                power_led_pin.set_low();
-            }
-
-            // TODO(tboldt): Add proper debouncing.
-            if user_button_pin.is_low() {
-                // TODO: also handle RTC when on USB power: `|| rtc_alarm.is_low().unwrap() {`.
-                info!("Button pushed");
-                activity_led_pin.set_high();
-                epaper.init().await.unwrap();
-                epaper.show_seven_color_blocks().await.unwrap();
-                epaper.deep_sleep().await.unwrap();
-                activity_led_pin.set_low();
-            }
-
-            watchdog.feed();
-            Timer::after(Duration::from_millis(200)).await;
+        // Run the display.
+        if show_display {
+            activity_led_pin.set_high();
+            epaper.init().await.unwrap();
+            epaper.show_seven_color_blocks().await.unwrap();
+            epaper.clear(epaper::Color::Orange).await.unwrap();
+            //epaper.deep_sleep().await.unwrap();
+            activity_led_pin.set_low();
+            show_display = false;
         }
+
+        if running_on_battery {
+            break 'main;
+        }
+
+        if charge_state_pin.is_low() {
+            // Charging.
+            power_led_pin.set_high();
+        } else {
+            // Not charging.
+            power_led_pin.set_low();
+        }
+
+        if user_button_pin.is_low() {
+            button_press_count += 1;
+            if button_press_count > 3 {
+                // TODO(tboldt): Restrict how requently the display can be shown.
+                show_display = true;
+                button_press_count = 0;
+            }
+        } else {
+            button_press_count = 0;
+        }
+
+        watchdog.feed();
+        Timer::after(Duration::from_millis(200)).await;
     }
 
     // Disconnect the battery.

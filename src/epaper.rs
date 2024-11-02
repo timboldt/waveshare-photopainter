@@ -18,7 +18,7 @@ pub enum Error {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]
-pub enum EPD7IN3FColor {
+pub enum Color {
     Black = 0b000,
     White = 0b001,
     Green = 0b010,
@@ -97,7 +97,7 @@ where
 
     /// Clears the display with the given color.
     #[allow(dead_code)]
-    pub async fn clear(&mut self, color: EPD7IN3FColor) -> Result<(), Error> {
+    pub async fn clear(&mut self, color: Color) -> Result<(), Error> {
         self.send_cmd(0x10).await?;
         for _ in 0..EPD_7IN3F_HEIGHT {
             // Two pixels per byte, so width in bytes is half the width in pixels.
@@ -116,14 +116,14 @@ where
         self.send_cmd(0x10).await?;
 
         let color_list = [
-            EPD7IN3FColor::White,
-            EPD7IN3FColor::Black,
-            EPD7IN3FColor::Blue,
-            EPD7IN3FColor::Green,
-            EPD7IN3FColor::Orange,
-            EPD7IN3FColor::Red,
-            EPD7IN3FColor::Yellow,
-            EPD7IN3FColor::White,
+            Color::White,
+            Color::Black,
+            Color::Blue,
+            Color::Green,
+            Color::Orange,
+            Color::Red,
+            Color::Yellow,
+            Color::White,
         ];
         for color in color_list.iter() {
             let color = *color as u8;
