@@ -1,337 +1,213 @@
 #![no_std]
 #![no_main]
 
-mod rtc;
-
-use panic_probe as _;
-
-use rp2040_hal as hal;
-
 use defmt::*;
-use defmt_rtt as _;
-use embedded_hal::delay::DelayNs;
-use embedded_hal::digital::{InputPin, OutputPin};
-use embedded_hal::i2c::I2c;
-use embedded_hal::spi::SpiDevice;
-use embedded_hal_0_2::adc::OneShot;
-use embedded_sdmmc::filesystem::Mode;
-use embedded_sdmmc::{SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
-use fugit::RateExtU32;
-use hal::{
-    clocks::{init_clocks_and_plls, Clock},
-    pac,
-    sio::Sio,
-    watchdog::Watchdog,
-};
+use embassy_executor::Spawner;
+use embassy_rp::adc::{self, Adc, Channel, InterruptHandler};
+use embassy_rp::bind_interrupts;
+use embassy_rp::gpio;
+use embassy_rp::spi::{self, Spi};
+use embassy_rp::watchdog::*;
+use embassy_time::{Duration, Timer};
+use gpio::{Input, Level, Output, Pull};
+use {defmt_rtt as _, panic_probe as _};
+
+mod epaper;
 
 // Minimum power is 3.1V.
 const MIN_BATTERY_MILLIVOLTS: u32 = 3100;
 
-/// A dummy timesource, which is mostly important for creating files.
-#[derive(Default)]
-pub struct DummyTimesource();
+bind_interrupts!(struct Irqs {
+    ADC_IRQ_FIFO => InterruptHandler;
+});
 
-impl TimeSource for DummyTimesource {
-    // TODO: Use the RTC instead.
-    fn get_timestamp(&self) -> Timestamp {
-        Timestamp {
-            year_since_1970: 0,
-            zero_indexed_month: 0,
-            zero_indexed_day: 0,
-            hours: 0,
-            minutes: 0,
-            seconds: 0,
-        }
-    }
-}
+// Original C code behavior:
+//
+// init:
+//   stdio logging
+//   epd spi
+//   sd spi
+//   rtc i2c
+//   VBAT ADC on pin 29
+//   gpio init:
+//     4x epd pins
+//     2x led pins
+//     3x charge/battery pins
+//     2x power control pins
+// watchdog enable
+// sleep 1s
+// rtc init
+// rtc set alarm
+// enable charge state IRQ callback
+// if battery is low:
+//   disable alarm
+//   flash low power led
+//   turn power off
+// led on
+// read SD card
+// if no main power
+//    run display
+//    turn power off
+// in a loop:
+//    wait for key press
+//    run display
 
-#[link_section = ".boot2"]
-#[used]
-pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
+    // Initialize Peripherals
+    let p = embassy_rp::init(Default::default());
 
-fn init_i2c1<I2C, Pins>(
-    mut pac: pac::Peripherals,
-    clocks: hal::clocks::ClocksManager,
-    pins: hal::gpio::Pins,
-) -> impl embedded_hal::i2c::I2c {
-    let sda_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio14.reconfigure();
-    let scl_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio15.reconfigure();
-
-    let i2c = hal::I2C::i2c1(
-        pac.I2C1,
-        sda_pin,
-        scl_pin,
-        400.kHz(),
-        &mut pac.RESETS,
-        &clocks.peripheral_clock,
-    );
-
-    i2c
-}
-
-#[rp2040_hal::entry]
-fn main() -> ! {
-    info!("Boot start");
-
-    let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-    let sio = Sio::new(pac.SIO);
-
-    // External high-speed crystal on the pico board is 12Mhz
-    let external_xtal_freq_hz = 12_000_000u32;
-    let clocks = init_clocks_and_plls(
-        external_xtal_freq_hz,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .unwrap();
-
-    let mut delay = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-
-    let pins = hal::gpio::Pins::new(
-        pac.IO_BANK0,
-        pac.PADS_BANK0,
-        sio.gpio_bank0,
-        &mut pac.RESETS,
-    );
-
-    // watchdog_enable(8*1000, 1);    // 8s
-
-    let sda_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio14.reconfigure();
-    let scl_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, _> = pins.gpio15.reconfigure();
-
-    let i2c = hal::I2C::i2c1(
-        pac.I2C1,
-        sda_pin,
-        scl_pin,
-        400.kHz(),
-        &mut pac.RESETS,
-        &clocks.peripheral_clock,
-    );
-
-    let mut rtc = rtc::PCF85063::new(i2c);
-    rtc.init_device(&mut delay).unwrap();
-
-    // RTC alarm (low means it triggered)
-    let mut rtc_alarm = pins.gpio6.into_pull_up_input();
-    info!("Alarm triggered: {}", rtc_alarm.is_low().unwrap());
-
-    // See unreleased crate https://github.com/Caemor/epd-waveshare.
-    // spi_init(EPD_SPI_PORT, 8000 * 1000);
-    // gpio_set_function(EPD_CLK_PIN, GPIO_FUNC_SPI);
-    // gpio_set_function(EPD_MOSI_PIN, GPIO_FUNC_SPI);
-    // DEV_GPIO_Mode(EPD_RST_PIN, 1);
-    // DEV_GPIO_Mode(EPD_DC_PIN, 1);
-    // DEV_GPIO_Mode(EPD_CS_PIN, 1);
-    // DEV_GPIO_Mode(EPD_BUSY_PIN, 0);
-    //     #define EPD_POWER_EN    16
-    // DEV_GPIO_Mode(EPD_POWER_EN, 1);
-    // DEV_Digital_Write(EPD_POWER_EN, 1);	// EPD power on
-    // DEV_Digital_Write(EPD_CS_PIN, 1);
-
-    //--- SD Card --
-
-    // SD Card SPI pins.
-    let sd_spi_sclk: hal::gpio::Pin<_, hal::gpio::FunctionSpi, hal::gpio::PullNone> =
-        pins.gpio2.reconfigure();
-    let sd_spi_mosi: hal::gpio::Pin<_, hal::gpio::FunctionSpi, hal::gpio::PullNone> =
-        pins.gpio3.reconfigure();
-    let sd_spi_miso: hal::gpio::Pin<_, hal::gpio::FunctionSpi, hal::gpio::PullUp> =
-        pins.gpio4.reconfigure();
-    let sd_spi_cs = pins.gpio5.into_push_pull_output();
-
-    // SD Card SPI device.
-    let sd_spi =
-        hal::spi::Spi::<_, _, _, 8>::new(pac.SPI0, (sd_spi_mosi, sd_spi_miso, sd_spi_sclk));
-    let sd_spi = sd_spi.init(
-        &mut pac.RESETS,
-        clocks.peripheral_clock.freq(),
-        400.kHz(), // card initialization happens at low baud rate
-        embedded_hal::spi::MODE_0,
-    );
-
-    // SD Card device.
-    let sdcard = SdCard::new(sd_spi, sd_spi_cs, delay);
-    let mut volume_mgr = VolumeManager::new(sdcard, DummyTimesource::default());
-
-    info!("Init SD card controller and retrieve card size...");
-    match volume_mgr.device().num_bytes() {
-        Ok(size) => info!("card size is {} bytes", size),
-        Err(e) => {
-            error!("Error retrieving card size: {}", defmt::Debug2Format(&e));
-        }
-    }
-
-    // Now that the card is initialized, clock can go faster
-    volume_mgr
-        .device()
-        .spi(|spi| spi.set_baudrate(clocks.peripheral_clock.freq(), 16.MHz()));
-
-    info!("Getting Volume 0...");
-    let mut volume = match volume_mgr.get_volume(VolumeIdx(0)) {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Error getting volume 0: {}", defmt::Debug2Format(&e));
-            loop {
-                // Should be unreachable.
-                delay.delay_ms(1000);
-            }
-        }
-    };
-
-    // After we have the volume (partition) of the drive we got to open the
-    // root directory:
-    let dir = match volume_mgr.open_root_dir(&volume) {
-        Ok(dir) => dir,
-        Err(e) => {
-            error!("Error opening root dir: {}", defmt::Debug2Format(&e));
-            loop {
-                // Should be unreachable.
-                delay.delay_ms(1000);
-            }
-        }
-    };
-
-    info!("Root directory opened!");
-
-    // This shows how to iterate through the directory and how
-    // to get the file names (and print them in hope they are UTF-8 compatible):
-    volume_mgr
-        .iterate_dir(&volume, &dir, |ent| {
-            info!(
-                "/{}.{}",
-                core::str::from_utf8(ent.name.base_name()).unwrap(),
-                core::str::from_utf8(ent.name.extension()).unwrap()
-            );
-        })
-        .unwrap();
-
-    //--- ADC ---
-
-    // Set up ADC, which is used to read the battery voltage.
-    let mut adc = hal::Adc::new(pac.ADC, &mut pac.RESETS);
-    let mut vbat_adc = hal::adc::AdcPin::new(pins.gpio29).unwrap();
-
-    //--- GPIOs --
-
-    // Activity LED (red).
-    let mut activity_led = pins.gpio25.into_push_pull_output();
-
-    // Power LED (green).
-    let mut power_led = pins.gpio26.into_push_pull_output();
-
-    // Battery power control (high is enabled; low turns off the power).
-    let mut battery_enable = pins.gpio18.into_push_pull_output();
-
+    // Activity LED: red.
+    let mut activity_led_pin = Output::new(p.PIN_25, Level::Low);
+    // Power LED: green.
+    let mut power_led_pin = Output::new(p.PIN_26, Level::High);
     // User button (low is button pressed, or the auto-switch is enabled).
-    let mut user_button = pins.gpio19.into_pull_up_input();
-
+    let user_button_pin = Input::new(p.PIN_19, Pull::Up);
+    // Battery power control (high is enabled; low turns off the power).
+    let mut battery_enable_pin = Output::new(p.PIN_18, Level::High);
     // Battery charging indicator (low is charging; high is not charging).
-    let mut charge_state = pins.gpio17.into_pull_up_input();
-
+    let charge_state_pin = Input::new(p.PIN_17, Pull::Up);
     // USB bus power (high means there is power).
-    let mut vbus_state = pins.gpio24.into_floating_input();
+    let vbus_state_pin = Input::new(p.PIN_24, Pull::None);
+    // Mystery pin 23, aka "Power_Mode".
+    let _power_mode_pin = Input::new(p.PIN_23, Pull::None);
 
-    activity_led.set_low().unwrap();
-    power_led.set_low().unwrap();
+    // If USB connected, set up logging over USB.
+    if vbus_state_pin.is_high() {
+        info!("USB power detected.");
+        // TODO(tboldt): Set up logging over USB.
+    }
 
-    // Connect the battery.
-    battery_enable.set_high().unwrap();
+    // Set up E-Paper Display
+    let epd_clk = p.PIN_10;
+    let epd_mosi = p.PIN_11;
+    let mut epd_config = spi::Config::default();
+    epd_config.frequency = 8_000_000;
+    let epd_spi = Spi::new_txonly(p.SPI1, epd_clk, epd_mosi, p.DMA_CH0, epd_config);
 
-    delay.delay_ms(500);
-    let battery: u16 = adc.read(&mut vbat_adc).unwrap();
-    // Some sort of voltage divider (10x?) at 3.3V reference, x1000 for mV, using a 12-bit ADC.
-    // XXXX for some reason, Waveshare uses a 3x multiplier in their code and it seems to work. Why?
-    let battery_millivolts = battery as u32 * 10 * 3300 / (1 << 12);
+    let epd_reset_pin = Output::new(p.PIN_12, Level::Low);
+    let epd_dc_pin = Output::new(p.PIN_8, Level::Low);
+    let epd_cs_pin = Output::new(p.PIN_9, Level::High);
+    let epd_busy_pin = Input::new(p.PIN_13, Pull::None);
+    let mut epd_enable_pin = Output::new(p.PIN_16, Level::High);
 
-    info!("VBUS power: {}", vbus_state.is_high().unwrap());
-    info!("Charging: {}", charge_state.is_low().unwrap());
-    info!("voltage: {} mV", battery_millivolts);
+    let mut epaper =
+        epaper::EPaper7In3F::new(epd_spi, epd_reset_pin, epd_dc_pin, epd_cs_pin, epd_busy_pin);
 
-    // let mut temperature_sensor = adc.take_temp_sensor().unwrap();
-    // for i in 0..10 {
-    //     let temp_sens_adc_counts: i64 = adc.read(&mut temperature_sensor).unwrap();
-    //     info!("Temperature: {} cnts", temp_sens_adc_counts);
-    //     let temp_uv = temp_sens_adc_counts * 3300 * 1000 / (1 << 12);
-    //     info!("Temperature: {} uV", temp_uv);
-    //     let temperature = 27 - (temp_uv - 706 * 1000) * 581 / 1000 / 1000;
-    //     info!("Temperature: {}", temperature);
-    //     delay.delay_ms(100);
-    // }
+    // TODO(tboldt): Setup SD card SPI
+    // #define SD_CS_PIN       5
+    // #define SD_CLK_PIN      2
+    // #define SD_MOSI_PIN     3
+    // #define SD_MISO_PIN     4
 
-    // rtcRunAlarm(Time, alarmTime);  // RTC run alarm
+    // TODO(tboldt): Setup Real Time Clock
+    // #define RTC_SDA         14
+    // #define RTC_SCL         15
+    // #define RTC_INT         6
 
-    //  sdScanDir();
+    // Setup VBAT ADC on pin 29
+    let mut adc = Adc::new(p.ADC, Irqs, adc::Config::default());
+    let mut v_sys = Channel::new_pin(p.PIN_29, Pull::None);
 
-    // void run_display(Time_data Time, Time_data alarmTime, char hasCard)
-    // {
-    //     if(hasCard) {
-    //         setFilePath();
-    //         EPD_7in3f_display_BMP(pathName, measureVBAT());   // display bmp
-    //     }
-    //     else {
-    //         EPD_7in3f_display(measureVBAT());
-    //     }
+    // Create a function to read the VSYS ADC value and convert to voltage.
+    let mut battery_voltage = || {
+        let v = adc.blocking_read(&mut v_sys).unwrap();
+        // 3.3V (3300mV) reference voltage, 3x voltage divider, 12-bit ADC (4096).
+        v as u32 * 3300 * 3 / 4096
+    };
+    info!("Battery voltage: {}", battery_voltage());
 
-    //     PCF85063_clear_alarm_flag();    // clear RTC alarm flag
-    //     rtcRunAlarm(Time, alarmTime);  // RTC run alarm
-    // }
+    // Enable the watchdog timer, in case something goes wrong.
+    let mut watchdog = Watchdog::new(p.WATCHDOG);
+    //xxx watchdog.start(Duration::from_secs(8));
+
+    Timer::after_millis(1000).await;
+
+    // TODO(tboldt): rtc init
+    // TODO(tboldt): rtc set alarm
+    // TODO(tboldt): enable charge state IRQ callback
+
+    // TODO(tboldt): main loop
+    // if battery is low:
+    //   disable alarm
+    //   flash low power led
+    //   turn power off
+    // led on
+    // read SD card
+    // if no main power
+    //    run display
+    //    turn power off
+    // in a loop:
+    //    wait for key press
+    //    run display
 
     info!("Init done");
 
-    if vbus_state.is_low().unwrap() {
-        info!("Running on batteries");
+    let mut show_display = true;
+    let mut button_press_count = 0;
+    'main: loop {
+        let running_on_battery = vbus_state_pin.is_low();
+        info!("Running on battery? {}", running_on_battery);
 
-        if battery_millivolts > MIN_BATTERY_MILLIVOLTS {
-            // XXX run display; in the meantime, show the red light so we know we are here.
-            activity_led.set_high().unwrap();
-            delay.delay_ms(500);
-        } else {
-            info!("Low power");
-            // XXX disable alarm
+        // If the battery is low, flash the low power LED, disable the alarm, and turn off the power.
+        if running_on_battery && battery_voltage() < MIN_BATTERY_MILLIVOLTS {
+            info!("Battery is low");
+            // TODO(tboldt): Disable the alarm, since there is not enough power to wake up.
             for _ in 0..5 {
-                power_led.set_high().unwrap();
-                delay.delay_ms(200);
-                power_led.set_low().unwrap();
-                delay.delay_ms(100);
+                power_led_pin.set_high();
+                Timer::after(Duration::from_millis(200)).await;
+                power_led_pin.set_low();
+                Timer::after(Duration::from_millis(100)).await;
             }
+            // Exit and power down.
+            break 'main;
         }
-    } else {
-        info!("Running off VBUS power");
 
-        // As long as it is plugged in, just keep looping.
-        while vbus_state.is_high().unwrap() {
-            if charge_state.is_low().unwrap() {
-                // Charging.
-                power_led.set_high().unwrap();
-            } else {
-                // Not charging.
-                power_led.set_low().unwrap();
-            }
-
-            if user_button.is_low().unwrap() {
-                // TODO: also handle RTC when on USB power: `|| rtc_alarm.is_low().unwrap() {`.
-                // xxx run display; in the meantime, show the red light so we know we are here.
-                activity_led.set_high().unwrap();
-                info!("Button pushed");
-                delay.delay_ms(500);
-                activity_led.set_low().unwrap();
-            }
-
-            delay.delay_ms(200);
+        // Run the display.
+        if show_display {
+            activity_led_pin.set_high();
+            epaper.init().await.unwrap();
+            //epaper.show_seven_color_blocks().await.unwrap();
+            epaper.clear(epaper::Color::White).await.unwrap();
+            epaper.deep_sleep().await.unwrap();
+            activity_led_pin.set_low();
+            show_display = false;
         }
+
+        if running_on_battery {
+            break 'main;
+        }
+
+        if charge_state_pin.is_low() {
+            // Charging.
+            power_led_pin.set_high();
+        } else {
+            // Not charging.
+            power_led_pin.set_low();
+        }
+
+        if user_button_pin.is_low() {
+            button_press_count += 1;
+            if button_press_count > 3 {
+                // TODO(tboldt): Restrict how requently the display can be shown.
+                show_display = true;
+                button_press_count = 0;
+            }
+        } else {
+            button_press_count = 0;
+        }
+
+        watchdog.feed();
+        Timer::after(Duration::from_millis(200)).await;
     }
 
+    epd_enable_pin.set_low();
+
     // Disconnect the battery.
-    battery_enable.set_low().unwrap();
+    battery_enable_pin.set_low();
 
     loop {
         // Should be unreachable.
-        delay.delay_ms(1000);
+        Timer::after(Duration::from_millis(1000)).await;
     }
 }
