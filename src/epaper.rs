@@ -1,4 +1,4 @@
-use defmt::*;
+use embassy_rp::watchdog::*;
 use embassy_rp::{
     gpio,
     spi::{self, Async},
@@ -60,9 +60,9 @@ where
     }
 
     /// Initializes the display.
-    pub async fn init(&mut self) -> Result<(), Error> {
+    pub async fn init(&mut self, watchdog: &mut Watchdog) -> Result<(), Error> {
         self.reset().await?;
-        self.wait_for_idle().await?;
+        self.wait_for_idle(watchdog).await?;
         Timer::after_millis(30).await;
 
         // Magic initialization sequence: replicated from Waveshare C code.
@@ -97,7 +97,7 @@ where
 
     /// Clears the display with the given color.
     #[allow(dead_code)]
-    pub async fn clear(&mut self, color: Color) -> Result<(), Error> {
+    pub async fn clear(&mut self, color: Color, watchdog: &mut Watchdog) -> Result<(), Error> {
         self.send_cmd(0x10).await?;
         let color = color as u8;
         let data = [color << 4 | color; EPD_7IN3F_WIDTH / 2];
@@ -105,12 +105,12 @@ where
             self.send_data(&data).await?;
         }
 
-        self.display_frame().await?;
+        self.display_frame(watchdog).await?;
         Ok(())
     }
 
     /// Draw the seven color blocks on the screen.
-    pub async fn show_seven_color_blocks(&mut self) -> Result<(), Error> {
+    pub async fn show_seven_color_blocks(&mut self, watchdog: &mut Watchdog) -> Result<(), Error> {
         self.send_cmd(0x10).await?;
 
         let color_list = [
@@ -132,15 +132,15 @@ where
                 self.send_data(&data).await?;
             }
         }
-        self.display_frame().await?;
+        self.display_frame(watchdog).await?;
         Ok(())
     }
 
     /// Sends the given image to the display.
     #[allow(dead_code)]
-    pub async fn show_image(&mut self, image: &[u8]) -> Result<(), Error> {
+    pub async fn show_image(&mut self, image: &[u8], watchdog: &mut Watchdog) -> Result<(), Error> {
         self.send_cmd_with_data(0x10, image).await?;
-        self.display_frame().await?;
+        self.display_frame(watchdog).await?;
         Ok(())
     }
 
@@ -163,8 +163,6 @@ where
 
     /// Sends a command to the display.
     async fn send_cmd(&mut self, command: u8) -> Result<(), Error> {
-        // XXX
-        info!("send_cmd: {:?}", command);
         // DC low: next byte is command.
         self.dc_pin.set_low();
         // CS low: start command transmission.
@@ -185,19 +183,6 @@ where
         self.spi.write(data).await.map_err(Error::SpiError)?;
         // CS high: end data transmission.
         self.cs_pin.set_high();
-
-        // // TODO(tboldt): It isn't clear to me why we need to toggle the CS pin for each byte. See if this can be improved.
-        // for b in 0..data.len() {
-        //     // CS low: start data transmission.
-        //     self.cs_pin.set_low();
-        //     // Send the data.
-        //     self.spi
-        //         .write(&data[b..b + 1])
-        //         .await
-        //         .map_err(Error::SpiError)?;
-        //     // CS high: end data transmission.
-        //     self.cs_pin.set_high();
-        // }
         Ok(())
     }
 
@@ -209,36 +194,35 @@ where
     }
 
     /// Waits for the display to become idle.
-    async fn wait_for_idle(&mut self) -> Result<(), Error> {
+    async fn wait_for_idle(&mut self, watchdog: &mut Watchdog) -> Result<(), Error> {
         let max_delay_ms = 50_000;
         let polling_ms = 10;
 
         let mut accum_ms = 0;
         while self.busy_pin.is_low() {
             Timer::after_millis(polling_ms).await;
+            watchdog.feed();
             accum_ms += polling_ms;
             if accum_ms >= max_delay_ms {
-                return Ok(());
-                // XXXXX FIXME:
-                //return Err(Error::Timeout);
+                return Err(Error::Timeout);
             }
         }
         Ok(())
     }
 
     /// Powers on the display, refreshes (transfers the frame buffer to) the display, and then powers off the display.
-    async fn display_frame(&mut self) -> Result<(), Error> {
+    async fn display_frame(&mut self, watchdog: &mut Watchdog) -> Result<(), Error> {
         // Power on the display.
         self.send_cmd(0x04).await?;
-        self.wait_for_idle().await?;
+        self.wait_for_idle(watchdog).await?;
 
         // Refresh the display.
         self.send_cmd_with_data(0x12, &[0x00]).await?;
-        self.wait_for_idle().await?;
+        self.wait_for_idle(watchdog).await?;
 
         // Power off the display.
         self.send_cmd_with_data(0x02, &[0x00]).await?;
-        self.wait_for_idle().await?;
+        self.wait_for_idle(watchdog).await?;
 
         Ok(())
     }

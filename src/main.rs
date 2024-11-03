@@ -119,7 +119,7 @@ async fn main(_spawner: Spawner) {
 
     // Enable the watchdog timer, in case something goes wrong.
     let mut watchdog = Watchdog::new(p.WATCHDOG);
-    //xxx watchdog.start(Duration::from_secs(8));
+    watchdog.start(Duration::from_secs(8));
 
     Timer::after_millis(1000).await;
 
@@ -166,9 +166,9 @@ async fn main(_spawner: Spawner) {
         // Run the display.
         if show_display {
             activity_led_pin.set_high();
-            epaper.init().await.unwrap();
-            //epaper.show_seven_color_blocks().await.unwrap();
-            epaper.clear(epaper::Color::White).await.unwrap();
+            epaper.init(&mut watchdog).await.unwrap();
+            epaper.show_seven_color_blocks(&mut watchdog).await.unwrap();
+            //epaper.clear(epaper::Color::White, &mut watchdog).await.unwrap();
             epaper.deep_sleep().await.unwrap();
             activity_led_pin.set_low();
             show_display = false;
