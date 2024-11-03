@@ -83,17 +83,16 @@ async fn main(_spawner: Spawner) {
     let epd_mosi = p.PIN_11;
     let mut epd_config = spi::Config::default();
     epd_config.frequency = 8_000_000;
-    let spi = Spi::new_txonly(p.SPI1, epd_clk, epd_mosi, p.DMA_CH0, epd_config);
+    let epd_spi = Spi::new_txonly(p.SPI1, epd_clk, epd_mosi, p.DMA_CH0, epd_config);
 
     let epd_reset_pin = Output::new(p.PIN_12, Level::Low);
     let epd_dc_pin = Output::new(p.PIN_8, Level::Low);
     let epd_cs_pin = Output::new(p.PIN_9, Level::High);
     let epd_busy_pin = Input::new(p.PIN_13, Pull::None);
-    let mut epaper =
-        epaper::EPaper7In3F::new(spi, epd_reset_pin, epd_dc_pin, epd_cs_pin, epd_busy_pin);
+    let mut epd_enable_pin = Output::new(p.PIN_16, Level::High);
 
-    //Enable the E-Paper Display power.
-    let _ = Output::new(p.PIN_16, Level::High);
+    let mut epaper =
+        epaper::EPaper7In3F::new(epd_spi, epd_reset_pin, epd_dc_pin, epd_cs_pin, epd_busy_pin);
 
     // TODO(tboldt): Setup SD card SPI
     // #define SD_CS_PIN       5
@@ -106,7 +105,7 @@ async fn main(_spawner: Spawner) {
     // #define RTC_SCL         15
     // #define RTC_INT         6
 
-    // TODO(tboldt): Setup VBAT ADC on pin 29
+    // Setup VBAT ADC on pin 29
     let mut adc = Adc::new(p.ADC, Irqs, adc::Config::default());
     let mut v_sys = Channel::new_pin(p.PIN_29, Pull::None);
 
@@ -168,9 +167,9 @@ async fn main(_spawner: Spawner) {
         if show_display {
             activity_led_pin.set_high();
             epaper.init().await.unwrap();
-            epaper.show_seven_color_blocks().await.unwrap();
-            epaper.clear(epaper::Color::Orange).await.unwrap();
-            //epaper.deep_sleep().await.unwrap();
+            //epaper.show_seven_color_blocks().await.unwrap();
+            epaper.clear(epaper::Color::White).await.unwrap();
+            epaper.deep_sleep().await.unwrap();
             activity_led_pin.set_low();
             show_display = false;
         }
@@ -201,6 +200,8 @@ async fn main(_spawner: Spawner) {
         watchdog.feed();
         Timer::after(Duration::from_millis(200)).await;
     }
+
+    epd_enable_pin.set_low();
 
     // Disconnect the battery.
     battery_enable_pin.set_low();

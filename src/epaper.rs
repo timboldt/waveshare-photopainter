@@ -99,12 +99,10 @@ where
     #[allow(dead_code)]
     pub async fn clear(&mut self, color: Color) -> Result<(), Error> {
         self.send_cmd(0x10).await?;
+        let color = color as u8;
+        let data = [color << 4 | color; EPD_7IN3F_WIDTH / 2];
         for _ in 0..EPD_7IN3F_HEIGHT {
-            // Two pixels per byte, so width in bytes is half the width in pixels.
-            for _ in 0..EPD_7IN3F_WIDTH / 2 {
-                self.send_data(&[(color as u8) << 4 | (color as u8)])
-                    .await?;
-            }
+            self.send_data(&data).await?;
         }
 
         self.display_frame().await?;
