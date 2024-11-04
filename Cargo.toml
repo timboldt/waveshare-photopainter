@@ -14,6 +14,9 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 embassy-executor = { version = "0.6", features = ["arch-cortex-m", "executor-thread", "defmt", "integrated-timers"] }
 embassy-time = { version = "0.3", features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-rp = { version = "0.2", features = ["defmt", "time-driver"] }
+embedded-sdmmc = "0.7.0"
+embedded-hal-bus = { version = "0.1", features = ["async"] }
+embassy-embedded-hal = "0.2.0"
 
 [profile.release]
 lto = true
