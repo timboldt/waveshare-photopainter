@@ -21,7 +21,7 @@ pub fn draw_random_walk_art(
     let colors = if background == Rgb888::BLACK {
         [Rgb888::WHITE, Rgb888::YELLOW, Rgb888::CSS_ORANGE]
     } else {
-        [Rgb888::BLACK, Rgb888::RED, Rgb888::BLUE]
+        [Rgb888::RED, Rgb888::BLUE, Rgb888::GREEN]
     };
     display.clear(background).unwrap();
 
@@ -35,7 +35,7 @@ pub fn draw_random_walk_art(
         for _ in 0..2000 {
             let prev_p = p;
             let r = rng.gen_range(0..4);
-            let step_size = 10;
+            let step_size = 7;
             match r {
                 0 => p.x += step_size,
                 1 => p.x -= step_size,
