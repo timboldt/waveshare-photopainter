@@ -6,13 +6,13 @@ target = "thumbv6m-none-eabi"
 #runner = "probe-rs run --chip RP2040_SELFDEBUG"
 runner = "elf2uf2-rs -d"
 
-
 rustflags = [
     "-C", "link-arg=--nmagic",
     "-C", "link-arg=-Tlink.x",
     "-C", "link-arg=-Tlink-rp.x",
     "-C", "link-arg=-Tdefmt.x",
-    "-C", "linker=flip-link",
+    # This was corrupting .BSS. Disabling it for now.
+    #"-C", "linker=flip-link",
     "-C", "inline-threshold=5",
     "-C", "no-vectorize-loops",
 ]

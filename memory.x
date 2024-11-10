@@ -5,7 +5,7 @@ MEMORY {
 Normal setup is 256K:
     RAM   : ORIGIN = 0x20000000, LENGTH = 256K
 But with self-debug, we need to use less:
-    RAM   : ORIGIN = 0x20000000, LENGTH = 232K
+    RAM   : ORIGIN = 0x20000000, LENGTH = 248K
 */
-    RAM   : ORIGIN = 0x20000000, LENGTH = 232K
+    RAM   : ORIGIN = 0x20000000, LENGTH = 256K
 }
