@@ -47,6 +47,9 @@ pub fn draw_random_walk_art(
                 .into_styled(line_style)
                 .draw(display)
                 .unwrap();
+            if p.x < 0 || p.x >= EPD_7IN3F_WIDTH as i32 || p.y < 0 || p.y >= EPD_7IN3F_HEIGHT as i32 {
+                break;
+            }
         }
     }
 
