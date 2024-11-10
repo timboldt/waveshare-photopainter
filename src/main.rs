@@ -37,16 +37,20 @@ use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_rp::{
     adc::{self, Adc, Channel, InterruptHandler},
-    bind_interrupts, gpio,
+    bind_interrupts,
+    clocks::RoscRng,
+    gpio,
     spi::{self, Spi},
     watchdog::*,
 };
 use embassy_time::{Duration, Timer};
-use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use gpio::{Input, Level, Output, Pull};
+use graphics::draw_random_walk_art;
 use panic_probe as _;
+use rand::RngCore;
 
 mod epaper;
+mod graphics;
 
 // Minimum power is 3.1V.
 const MIN_BATTERY_MILLIVOLTS: u32 = 3100;
@@ -77,6 +81,8 @@ bind_interrupts!(struct Irqs {
 async fn main(_spawner: Spawner) {
     // Initialize Peripherals
     let p = embassy_rp::init(Default::default());
+
+    let mut rng = RoscRng;
 
     // Activity LED: red.
     let mut activity_led_pin = Output::new(p.PIN_25, Level::Low);
@@ -217,12 +223,7 @@ async fn main(_spawner: Spawner) {
             activity_led_pin.set_high();
             epaper.init(&mut watchdog).await.unwrap();
             let display_buf = epaper::DisplayBuffer::get();
-            display_buf.clear(Rgb888::BLACK).unwrap();
-            for y in 50..100 {
-                for x in 50..100 {
-                    display_buf.set_pixel(x, y, epaper::Color::Red);
-                }
-            }
+            draw_random_walk_art(display_buf, rng.next_u64()).unwrap();
             epaper.show_image(display_buf, &mut watchdog).await.unwrap();
             //epaper.show_seven_color_blocks(&mut watchdog).await.unwrap();
             //epaper.clear(epaper::Color::White, &mut watchdog).await.unwrap();
