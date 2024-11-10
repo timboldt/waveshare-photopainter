@@ -17,6 +17,7 @@ embassy-rp = { version = "0.2", features = ["defmt", "time-driver"] }
 embedded-sdmmc = "0.7.0"
 embedded-hal-bus = { version = "0.1", features = ["async"] }
 embassy-embedded-hal = "0.2.0"
+embedded-graphics = "0.8.1"
 
 [profile.release]
 lto = true

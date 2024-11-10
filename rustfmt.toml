@@ -1,0 +1,7 @@
+comment_width = 100
+wrap_comments = true
+
+reorder_imports = true
+group_imports = "StdExternalCrate"
+imports_granularity = "Crate"
+

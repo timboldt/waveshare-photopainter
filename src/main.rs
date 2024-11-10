@@ -33,18 +33,18 @@
 //    run display
 
 use defmt::*;
-use embassy_embedded_hal::SetConfig;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_rp::adc::{self, Adc, Channel, InterruptHandler};
-use embassy_rp::bind_interrupts;
-use embassy_rp::gpio;
-use embassy_rp::spi::{self, Spi};
-use embassy_rp::watchdog::*;
+use embassy_rp::{
+    adc::{self, Adc, Channel, InterruptHandler},
+    bind_interrupts, gpio,
+    spi::{self, Spi},
+    watchdog::*,
+};
 use embassy_time::{Duration, Timer};
-use embedded_hal_bus::spi::ExclusiveDevice;
-use embedded_sdmmc::sdcard::{self, DummyCsPin, SdCard};
+use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use gpio::{Input, Level, Output, Pull};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 mod epaper;
 
@@ -55,21 +55,23 @@ bind_interrupts!(struct Irqs {
     ADC_IRQ_FIFO => InterruptHandler;
 });
 
-struct DummyTimesource();
+// struct DummyTimesource();
 
-// TODO(tboldt): Implement the TimeSource trait with the RTC.
-impl embedded_sdmmc::TimeSource for DummyTimesource {
-    fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
-        embedded_sdmmc::Timestamp {
-            year_since_1970: 0,
-            zero_indexed_month: 0,
-            zero_indexed_day: 0,
-            hours: 0,
-            minutes: 0,
-            seconds: 0,
-        }
-    }
-}
+// // TODO(tboldt): Implement the TimeSource trait with the RTC.
+// impl embedded_sdmmc::TimeSource for DummyTimesource {
+//     fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
+//         embedded_sdmmc::Timestamp {
+//             year_since_1970: 0,
+//             zero_indexed_month: 0,
+//             zero_indexed_day: 0,
+//             hours: 0,
+//             minutes: 0,
+//             seconds: 0,
+//         }
+//     }
+// }
+
+//static mut DISPLAY_BUF: epaper::DisplayBuffer = epaper::DisplayBuffer::default();
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -113,36 +115,38 @@ async fn main(_spawner: Spawner) {
     let mut epaper =
         epaper::EPaper7In3F::new(epd_spi, epd_reset_pin, epd_dc_pin, epd_cs_pin, epd_busy_pin);
 
-    // Setup SD card SPI
-    let sdcard_clk = p.PIN_2;
-    let sdcard_mosi = p.PIN_3;
-    let sdcard_miso = p.PIN_4;
-    let mut sdcard_config = spi::Config::default();
+    // // Setup SD card SPI
+    // let sdcard_clk = p.PIN_2;
+    // let sdcard_mosi = p.PIN_3;
+    // let sdcard_miso = p.PIN_4;
+    // let mut sdcard_config = spi::Config::default();
 
-    // Before talking to the SD Card, the caller needs to send 74 clocks cycles on the SPI Clock line, at 400 kHz, with no chip-select asserted (or at least, not the chip-select of the SD Card).
-    sdcard_config.frequency = 400_000;
-    let sdcard_spi = Spi::new_blocking(p.SPI0, sdcard_clk, sdcard_mosi, sdcard_miso, sdcard_config);
+    // // Before talking to the SD Card, the caller needs to send 74 clocks cycles on the SPI Clock
+    // line, at 400 kHz, with no chip-select asserted (or at least, not the chip-select of the SD
+    // Card). sdcard_config.frequency = 400_000;
+    // let sdcard_spi = Spi::new_blocking(p.SPI0, sdcard_clk, sdcard_mosi, sdcard_miso,
+    // sdcard_config);
 
-    // Use a dummy cs pin here, for embedded-hal SpiDevice compatibility reasons
-    let sdcard_spi_dev = ExclusiveDevice::new_no_delay(sdcard_spi, DummyCsPin);
-    // Real cs pin
-    let sdcard_cs_pin = Output::new(p.PIN_5, Level::High);
+    // // Use a dummy cs pin here, for embedded-hal SpiDevice compatibility reasons
+    // let sdcard_spi_dev = ExclusiveDevice::new_no_delay(sdcard_spi, DummyCsPin);
+    // // Real cs pin
+    // let sdcard_cs_pin = Output::new(p.PIN_5, Level::High);
 
-    let sdcard = SdCard::new(sdcard_spi_dev, sdcard_cs_pin, embassy_time::Delay);
+    // let sdcard = SdCard::new(sdcard_spi_dev, sdcard_cs_pin, embassy_time::Delay);
 
-    //Once the card is initialized, the SPI clock can go faster.
-    let mut sdcard_config = spi::Config::default();
-    sdcard_config.frequency = 12_500_000;
-    sdcard
-        .spi(|dev| dev.bus_mut().set_config(&sdcard_config))
-        .ok();
-    let mut volume_mgr = embedded_sdmmc::VolumeManager::new(sdcard, DummyTimesource());
-    let mut volume0 = volume_mgr
-        .open_volume(embedded_sdmmc::VolumeIdx(0))
-        .unwrap();
-    let mut root_dir = volume0.open_root_dir().unwrap();
-    let pic_dir = root_dir.open_dir("pic").unwrap();
-    //xxx iterate_dir()
+    // //Once the card is initialized, the SPI clock can go faster.
+    // let mut sdcard_config = spi::Config::default();
+    // sdcard_config.frequency = 12_500_000;
+    // sdcard
+    //     .spi(|dev| dev.bus_mut().set_config(&sdcard_config))
+    //     .ok();
+    // let mut volume_mgr = embedded_sdmmc::VolumeManager::new(sdcard, DummyTimesource());
+    // let mut volume0 = volume_mgr
+    //     .open_volume(embedded_sdmmc::VolumeIdx(0))
+    //     .unwrap();
+    // let mut root_dir = volume0.open_root_dir().unwrap();
+    // let pic_dir = root_dir.open_dir("pic").unwrap();
+    // //xxx iterate_dir()
 
     // TODO(tboldt): Setup Real Time Clock
     // #define RTC_SDA         14
@@ -193,7 +197,8 @@ async fn main(_spawner: Spawner) {
         let running_on_battery = vbus_state_pin.is_low();
         info!("Running on battery? {}", running_on_battery);
 
-        // If the battery is low, flash the low power LED, disable the alarm, and turn off the power.
+        // If the battery is low, flash the low power LED, disable the alarm, and turn off the
+        // power.
         if running_on_battery && battery_voltage() < MIN_BATTERY_MILLIVOLTS {
             info!("Battery is low");
             // TODO(tboldt): Disable the alarm, since there is not enough power to wake up.
@@ -211,7 +216,15 @@ async fn main(_spawner: Spawner) {
         if show_display {
             activity_led_pin.set_high();
             epaper.init(&mut watchdog).await.unwrap();
-            epaper.show_seven_color_blocks(&mut watchdog).await.unwrap();
+            let display_buf = epaper::DisplayBuffer::get();
+            display_buf.clear(Rgb888::BLACK).unwrap();
+            for y in 50..100 {
+                for x in 50..100 {
+                    display_buf.set_pixel(x, y, epaper::Color::Red);
+                }
+            }
+            epaper.show_image(display_buf, &mut watchdog).await.unwrap();
+            //epaper.show_seven_color_blocks(&mut watchdog).await.unwrap();
             //epaper.clear(epaper::Color::White, &mut watchdog).await.unwrap();
             epaper.deep_sleep().await.unwrap();
             activity_led_pin.set_low();
