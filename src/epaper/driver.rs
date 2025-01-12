@@ -15,7 +15,6 @@ pub struct EPaper7In3F<SPI: embassy_rp::spi::Instance + 'static> {
     busy_pin: gpio::Input<'static>,
 }
 
-//#[async_trait]
 impl<SPI> EPaper7In3F<SPI>
 where
     SPI: embassy_rp::spi::Instance,

@@ -40,6 +40,8 @@ use embassy_rp::{
     bind_interrupts,
     clocks::RoscRng,
     gpio,
+    i2c::{self},
+    peripherals::I2C1,
     spi::{self, Spi},
     watchdog::*,
 };
@@ -51,12 +53,14 @@ use rand::RngCore;
 
 mod epaper;
 mod graphics;
+mod rtc;
 
 // Minimum power is 3.1V.
 const MIN_BATTERY_MILLIVOLTS: u32 = 3100;
 
 bind_interrupts!(struct Irqs {
     ADC_IRQ_FIFO => InterruptHandler;
+    I2C1_IRQ => i2c::InterruptHandler<I2C1>;
 });
 
 // struct DummyTimesource();
@@ -154,10 +158,12 @@ async fn main(_spawner: Spawner) {
     // let pic_dir = root_dir.open_dir("pic").unwrap();
     // //xxx iterate_dir()
 
-    // TODO(tboldt): Setup Real Time Clock
-    // #define RTC_SDA         14
-    // #define RTC_SCL         15
-    // #define RTC_INT         6
+    // Setup Real Time Clock
+    let rtc_sda = p.PIN_14;
+    let rtc_scl = p.PIN_15;
+    let _rtc_int = p.PIN_6;
+    let i2c = i2c::I2c::new_async(p.I2C1, rtc_scl, rtc_sda, Irqs, i2c::Config::default());
+    let mut rtc = rtc::Pcf85063::new(i2c);
 
     // Setup VBAT ADC on pin 29
     let mut adc = Adc::new(p.ADC, Irqs, adc::Config::default());
@@ -177,6 +183,7 @@ async fn main(_spawner: Spawner) {
 
     Timer::after_millis(1000).await;
 
+    rtc.init().await.unwrap();
     // TODO(tboldt): rtc init
     // TODO(tboldt): rtc set alarm
     // TODO(tboldt): enable charge state IRQ callback

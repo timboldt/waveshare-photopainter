@@ -2,7 +2,6 @@ use embassy_rp::spi::{self};
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 
 mod buffer;
-mod constants;
 mod driver;
 pub use buffer::DisplayBuffer;
 pub use driver::EPaper7In3F;
