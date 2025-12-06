@@ -35,10 +35,7 @@ impl UsbConsole {
     pub async fn run<'d>(
         &mut self,
         usb: embassy_rp::Peri<'d, USB>,
-        epaper: &mut crate::epaper::EPaper7In3F<embassy_rp::peripherals::SPI1>,
-        watchdog: &mut embassy_rp::watchdog::Watchdog,
-        rng: &mut embassy_rp::clocks::RoscRng,
-        activity_led: &mut embassy_rp::gpio::Output<'_>,
+        mut ctx: crate::DeviceContext,
     ) -> ! {
         info!("Starting USB console");
 
@@ -93,9 +90,7 @@ impl UsbConsole {
                 let _ = self.write_prompt(&mut class).await;
 
                 // Main console loop
-                let _ = self
-                    .run_console(&mut class, epaper, watchdog, rng, activity_led)
-                    .await;
+                let _ = self.run_console(&mut class, &mut ctx).await;
 
                 info!("USB disconnected");
             }
@@ -110,10 +105,7 @@ impl UsbConsole {
     async fn run_console<'d>(
         &mut self,
         class: &mut CdcAcmClass<'d, Driver<'d, USB>>,
-        epaper: &mut crate::epaper::EPaper7In3F<embassy_rp::peripherals::SPI1>,
-        watchdog: &mut embassy_rp::watchdog::Watchdog,
-        rng: &mut embassy_rp::clocks::RoscRng,
-        activity_led: &mut embassy_rp::gpio::Output<'_>,
+        ctx: &mut crate::DeviceContext,
     ) -> Result<(), EndpointError> {
         loop {
             let mut buf = [0u8; 1];
@@ -135,8 +127,7 @@ impl UsbConsole {
                         info!("Command: {}", cmd_str);
 
                         if let Some(cmd) = parse_command(cmd_str) {
-                            self.execute_command(class, epaper, watchdog, rng, activity_led, cmd)
-                                .await?;
+                            self.execute_command(class, ctx, cmd).await?;
                         } else {
                             self.write_line(class, "Unknown command. Type HELP for help.")
                                 .await?;
@@ -188,16 +179,13 @@ impl UsbConsole {
     async fn execute_command<'a>(
         &mut self,
         class: &mut CdcAcmClass<'a, Driver<'a, USB>>,
-        epaper: &mut crate::epaper::EPaper7In3F<embassy_rp::peripherals::SPI1>,
-        watchdog: &mut embassy_rp::watchdog::Watchdog,
-        rng: &mut embassy_rp::clocks::RoscRng,
-        activity_led: &mut embassy_rp::gpio::Output<'_>,
+        ctx: &mut crate::DeviceContext,
         cmd: ConsoleCommand,
     ) -> Result<(), EndpointError> {
         match cmd {
             ConsoleCommand::Go => {
                 self.write_line(class, "Running display update...").await?;
-                match crate::run_display_update(epaper, watchdog, rng, activity_led).await {
+                match crate::run_display_update(ctx).await {
                     Ok(()) => {
                         self.write_line(class, "Display update complete!").await?;
                     }
@@ -208,21 +196,75 @@ impl UsbConsole {
                 }
             }
             ConsoleCommand::Sleep(seconds) => {
+                if seconds == 0 {
+                    self.write_line(class, "ERROR: Sleep time must be > 0")
+                        .await?;
+                    return Ok(());
+                }
+
                 let mut buf = [0u8; 64];
                 let msg = format_no_std::show(
                     &mut buf,
-                    format_args!("Sleeping for {} seconds...", seconds),
+                    format_args!("Deep sleep for {} seconds (power off)...", seconds),
                 )
-                .unwrap_or("Sleeping...");
+                .unwrap_or("Deep sleep...");
                 self.write_line(class, msg).await?;
-                Timer::after(Duration::from_secs(seconds as u64)).await;
-                self.write_line(class, "Awake!").await?;
+
+                // Get current RTC time
+                let current_time = match ctx.rtc.get_time().await {
+                    Ok(t) => t,
+                    Err(_) => {
+                        self.write_line(class, "ERROR: Failed to read RTC time")
+                            .await?;
+                        return Ok(());
+                    }
+                };
+
+                // Calculate alarm time
+                let alarm_time = crate::rtc::add_seconds_to_time(&current_time, seconds);
+
+                // Set current time (in case RTC drifted)
+                if ctx.rtc.set_time(&current_time).await.is_err() {
+                    self.write_line(class, "ERROR: Failed to set RTC time")
+                        .await?;
+                    return Ok(());
+                }
+
+                // Set RTC alarm
+                if ctx.rtc.set_alarm(&alarm_time).await.is_err() {
+                    self.write_line(class, "ERROR: Failed to set RTC alarm")
+                        .await?;
+                    return Ok(());
+                }
+
+                // Clear any existing alarm flag
+                let _ = ctx.rtc.clear_alarm_flag().await;
+
+                // Small delay to ensure message is sent
+                Timer::after(Duration::from_millis(100)).await;
+
+                info!("Powering off - RTC alarm will wake in {} seconds", seconds);
+
+                // Turn off E-paper display power
+                ctx.epd_enable.set_low();
+
+                // Power off the device by disabling battery
+                // The RTC INT pin is connected to a MOSFET that will power the device back on
+                // when the alarm triggers
+                ctx.battery_enable.set_low();
+
+                // This line should never be reached, but just in case...
+                loop {
+                    Timer::after(Duration::from_secs(1)).await;
+                }
             }
             ConsoleCommand::Help => {
                 self.write_line(class, "Available commands:").await?;
                 self.write_line(class, "  GO        - Run display update")
                     .await?;
-                self.write_line(class, "  SLEEP n   - Sleep for n seconds")
+                self.write_line(class, "  SLEEP n   - Deep sleep (power off) for n seconds")
+                    .await?;
+                self.write_line(class, "              RTC alarm will power device back on")
                     .await?;
                 self.write_line(class, "  HELP or ? - Show this help")
                     .await?;
