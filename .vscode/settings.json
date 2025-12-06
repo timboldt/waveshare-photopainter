@@ -1,4 +1,36 @@
 {
+  // Target for embedded development
   "rust-analyzer.cargo.target": "thumbv6m-none-eabi",
-  "rust-analyzer.checkOnSave.allTargets": false,
+
+  // Check settings - use modern format
+  "rust-analyzer.check.allTargets": false,
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": ["--target", "thumbv6m-none-eabi"],
+
+  // Build settings
+  "rust-analyzer.cargo.features": [],
+  "rust-analyzer.cargo.allFeatures": false,
+
+  // Disable build scripts to avoid "unknown package" errors
+  "rust-analyzer.cargo.buildScripts.enable": false,
+  "rust-analyzer.cargo.buildScripts.overrideCommand": null,
+
+  // Proc macro settings - some embedded crates have complex macros
+  "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.procMacro.attributes.enable": true,
+
+  // Diagnostics - reduce noise from dependencies
+  "rust-analyzer.diagnostics.disabled": [
+    "unresolved-proc-macro"
+  ],
+
+  // Limit the number of parallel jobs
+  "rust-analyzer.cargo.extraEnv": {
+    "CARGO_BUILD_JOBS": "4"
+  },
+
+  // Suppress noisy error logs
+  "rust-analyzer.server.extraEnv": {
+    "RUST_LOG": "error"
+  }
 }

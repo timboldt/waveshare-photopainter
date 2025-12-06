@@ -1,0 +1,28 @@
+# rust-analyzer configuration for embedded development
+
+[build]
+# Use the target specified in .cargo/config.toml
+target = "thumbv6m-none-eabi"
+
+[check]
+# Use clippy for better linting
+command = "clippy"
+# Don't check all targets (build scripts, etc.) for faster analysis
+allTargets = false
+# Extra arguments for cargo check
+extraArgs = ["--release"]
+
+[cargo]
+# Don't load build script output (can be slow for embedded)
+buildScripts.enable = true
+# Use sysroot libraries
+sysroot = "discover"
+
+[procMacro]
+# Enable procedural macros (embassy uses many)
+enable = true
+
+[diagnostics]
+# Don't show warnings from dependencies
+warningsAsInfo = []
+warningsAsHint = []
