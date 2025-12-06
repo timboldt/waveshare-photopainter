@@ -258,6 +258,23 @@ impl UsbConsole {
                     Timer::after(Duration::from_secs(1)).await;
                 }
             }
+            ConsoleCommand::Dfu => {
+                self.write_line(class, "Rebooting to USB bootloader (UF2 mode)...")
+                    .await?;
+
+                // Small delay to ensure message is sent
+                Timer::after(Duration::from_millis(100)).await;
+
+                info!("Resetting to USB boot mode");
+
+                // Reset to USB bootloader mode
+                embassy_rp::rom_data::reset_to_usb_boot(0, 0);
+
+                // This line should never be reached
+                loop {
+                    Timer::after(Duration::from_secs(1)).await;
+                }
+            }
             ConsoleCommand::Help => {
                 self.write_line(class, "Available commands:").await?;
                 self.write_line(class, "  GO        - Run display update")
@@ -265,6 +282,8 @@ impl UsbConsole {
                 self.write_line(class, "  SLEEP n   - Deep sleep (power off) for n seconds")
                     .await?;
                 self.write_line(class, "              RTC alarm will power device back on")
+                    .await?;
+                self.write_line(class, "  DFU       - Reboot to USB bootloader (UF2 mode)")
                     .await?;
                 self.write_line(class, "  HELP or ? - Show this help")
                     .await?;
@@ -278,6 +297,7 @@ impl UsbConsole {
 pub enum ConsoleCommand {
     Go,
     Sleep(u32),
+    Dfu,
     Help,
 }
 
@@ -306,6 +326,7 @@ pub fn parse_command(cmd: &str) -> Option<ConsoleCommand> {
                 parts[1].parse::<u32>().ok().map(ConsoleCommand::Sleep)
             }
         }
+        "DFU" => Some(ConsoleCommand::Dfu),
         "HELP" | "?" => Some(ConsoleCommand::Help),
         _ => None,
     }
