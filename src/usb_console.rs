@@ -258,6 +258,76 @@ impl UsbConsole {
                     Timer::after(Duration::from_secs(1)).await;
                 }
             }
+            ConsoleCommand::Time => match ctx.rtc.get_time().await {
+                Ok(time) => {
+                    let mut buf = [0u8; 64];
+                    let msg = format_no_std::show(
+                        &mut buf,
+                        format_args!(
+                            "Time: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                            time.years,
+                            time.months,
+                            time.days,
+                            time.hours,
+                            time.minutes,
+                            time.seconds
+                        ),
+                    )
+                    .unwrap_or("Time read error");
+                    self.write_line(class, msg).await?;
+                }
+                Err(_) => {
+                    self.write_line(class, "ERROR: Failed to read RTC time")
+                        .await?;
+                }
+            },
+            ConsoleCommand::SetTime(time) => {
+                // Validate time data
+                if time.months == 0 || time.months > 12 {
+                    self.write_line(class, "ERROR: Month must be 1-12").await?;
+                    return Ok(());
+                }
+                if time.days == 0 || time.days > 31 {
+                    self.write_line(class, "ERROR: Day must be 1-31").await?;
+                    return Ok(());
+                }
+                if time.hours > 23 {
+                    self.write_line(class, "ERROR: Hour must be 0-23").await?;
+                    return Ok(());
+                }
+                if time.minutes > 59 {
+                    self.write_line(class, "ERROR: Minute must be 0-59").await?;
+                    return Ok(());
+                }
+                if time.seconds > 59 {
+                    self.write_line(class, "ERROR: Second must be 0-59").await?;
+                    return Ok(());
+                }
+
+                match ctx.rtc.set_time(&time).await {
+                    Ok(()) => {
+                        let mut buf = [0u8; 64];
+                        let msg = format_no_std::show(
+                            &mut buf,
+                            format_args!(
+                                "Time set to: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                                time.years,
+                                time.months,
+                                time.days,
+                                time.hours,
+                                time.minutes,
+                                time.seconds
+                            ),
+                        )
+                        .unwrap_or("Time set");
+                        self.write_line(class, msg).await?;
+                    }
+                    Err(_) => {
+                        self.write_line(class, "ERROR: Failed to set RTC time")
+                            .await?;
+                    }
+                }
+            }
             ConsoleCommand::Dfu => {
                 self.write_line(class, "Rebooting to USB bootloader (UF2 mode)...")
                     .await?;
@@ -283,6 +353,12 @@ impl UsbConsole {
                     .await?;
                 self.write_line(class, "              RTC alarm will power device back on")
                     .await?;
+                self.write_line(class, "  TIME      - Display current RTC time")
+                    .await?;
+                self.write_line(class, "  SETTIME Y M D H M S - Set RTC time")
+                    .await?;
+                self.write_line(class, "              Example: SETTIME 2025 12 6 14 39 30")
+                    .await?;
                 self.write_line(class, "  DFU       - Reboot to USB bootloader (UF2 mode)")
                     .await?;
                 self.write_line(class, "  HELP or ? - Show this help")
@@ -297,6 +373,8 @@ impl UsbConsole {
 pub enum ConsoleCommand {
     Go,
     Sleep(u32),
+    Time,
+    SetTime(crate::rtc::TimeData),
     Dfu,
     Help,
 }
@@ -324,6 +402,29 @@ pub fn parse_command(cmd: &str) -> Option<ConsoleCommand> {
                 None
             } else {
                 parts[1].parse::<u32>().ok().map(ConsoleCommand::Sleep)
+            }
+        }
+        "TIME" => Some(ConsoleCommand::Time),
+        "SETTIME" => {
+            // SETTIME expects 6 arguments: year month day hour minute second
+            if parts.len() < 7 {
+                None
+            } else {
+                let year = parts[1].parse::<u16>().ok()?;
+                let month = parts[2].parse::<u16>().ok()?;
+                let day = parts[3].parse::<u16>().ok()?;
+                let hour = parts[4].parse::<u16>().ok()?;
+                let minute = parts[5].parse::<u16>().ok()?;
+                let second = parts[6].parse::<u16>().ok()?;
+
+                Some(ConsoleCommand::SetTime(crate::rtc::TimeData {
+                    years: year,
+                    months: month,
+                    days: day,
+                    hours: hour,
+                    minutes: minute,
+                    seconds: second,
+                }))
             }
         }
         "DFU" => Some(ConsoleCommand::Dfu),
