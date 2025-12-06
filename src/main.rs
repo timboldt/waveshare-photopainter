@@ -49,7 +49,6 @@ use embassy_time::{Duration, Timer};
 use gpio::{Input, Level, Output, Pull};
 use graphics::draw_random_walk_art;
 use panic_probe as _;
-use rand::RngCore;
 
 mod epaper;
 mod graphics;

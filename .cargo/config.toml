@@ -13,7 +13,8 @@ rustflags = [
     "-C", "link-arg=-Tdefmt.x",
     # This was corrupting .BSS. Disabling it for now.
     #"-C", "linker=flip-link",
-    "-C", "inline-threshold=5",
+    # inline-threshold is deprecated, use llvm-args if needed
+    #"-C", "llvm-args=--inline-threshold=5",
     "-C", "no-vectorize-loops",
 ]
 

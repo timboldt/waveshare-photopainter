@@ -22,7 +22,7 @@ impl DisplayBuffer {
     pub fn set_pixel(&mut self, x: usize, y: usize, color: Color) {
         let index = (x + y * EPD_7IN3F_WIDTH) / 2;
         let color = color as u8;
-        if x % 2 == 0 {
+        if x.is_multiple_of(2) {
             self.frame_buffer[index] = ((color << 4) & 0xF0) | (self.frame_buffer[index] & 0x0F);
         } else {
             self.frame_buffer[index] = (self.frame_buffer[index] & 0xF0) | (color & 0x0F);
