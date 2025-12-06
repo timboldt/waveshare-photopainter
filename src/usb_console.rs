@@ -328,6 +328,74 @@ impl UsbConsole {
                     }
                 }
             }
+            ConsoleCommand::Battery => {
+                let voltage = ctx.battery_voltage();
+                let charging = ctx.charge_state.is_low();
+                let usb_power = ctx.vbus_state.is_high();
+
+                let mut buf = [0u8; 128];
+                let msg = format_no_std::show(&mut buf, format_args!("Battery: {}mV", voltage))
+                    .unwrap_or("Battery voltage");
+                self.write_line(class, msg).await?;
+
+                let status_msg = match (usb_power, charging) {
+                    (true, true) => "USB power connected, charging",
+                    (true, false) => "USB power connected, not charging (full)",
+                    (false, _) => "Running on battery",
+                };
+                self.write_line(class, status_msg).await?;
+
+                // Show battery status
+                if !usb_power && voltage < crate::MIN_BATTERY_MILLIVOLTS {
+                    self.write_line(class, "WARNING: Battery voltage is low!")
+                        .await?;
+                }
+            }
+            ConsoleCommand::Reset => {
+                self.write_line(class, "Resetting device...").await?;
+
+                // Small delay to ensure message is sent
+                Timer::after(Duration::from_millis(100)).await;
+
+                info!("System reset requested");
+
+                // Perform system reset
+                cortex_m::peripheral::SCB::sys_reset();
+            }
+            ConsoleCommand::Version => {
+                let version = env!("CARGO_PKG_VERSION");
+                let mut buf = [0u8; 64];
+                let msg =
+                    format_no_std::show(&mut buf, format_args!("Firmware version: {}", version))
+                        .unwrap_or("Firmware version");
+                self.write_line(class, msg).await?;
+            }
+            ConsoleCommand::Clear => {
+                self.write_line(class, "Clearing display to white...")
+                    .await?;
+
+                // Get display buffer and clear it (0xFF = white)
+                let display_buf = crate::epaper::DisplayBuffer::get();
+                display_buf.frame_buffer.fill(0xFF);
+
+                // Initialize and show the cleared display
+                match ctx.epaper.init(&mut ctx.watchdog).await {
+                    Ok(()) => match ctx.epaper.show_image(display_buf, &mut ctx.watchdog).await {
+                        Ok(()) => {
+                            let _ = ctx.epaper.deep_sleep().await;
+                            self.write_line(class, "Display cleared!").await?;
+                        }
+                        Err(_) => {
+                            self.write_line(class, "ERROR: Failed to update display")
+                                .await?;
+                        }
+                    },
+                    Err(_) => {
+                        self.write_line(class, "ERROR: Failed to initialize display")
+                            .await?;
+                    }
+                }
+            }
             ConsoleCommand::Dfu => {
                 self.write_line(class, "Rebooting to USB bootloader (UF2 mode)...")
                     .await?;
@@ -347,7 +415,9 @@ impl UsbConsole {
             }
             ConsoleCommand::Help => {
                 self.write_line(class, "Available commands:").await?;
-                self.write_line(class, "  GO        - Run display update")
+                self.write_line(class, "  GO        - Run display update (random art)")
+                    .await?;
+                self.write_line(class, "  CLEAR     - Clear display to white")
                     .await?;
                 self.write_line(class, "  SLEEP n   - Deep sleep (power off) for n seconds")
                     .await?;
@@ -358,6 +428,12 @@ impl UsbConsole {
                 self.write_line(class, "  SETTIME Y M D H M S - Set RTC time")
                     .await?;
                 self.write_line(class, "              Example: SETTIME 2025 12 6 14 39 30")
+                    .await?;
+                self.write_line(class, "  BATTERY   - Show battery voltage and status")
+                    .await?;
+                self.write_line(class, "  VERSION   - Show firmware version")
+                    .await?;
+                self.write_line(class, "  RESET     - Soft reset device")
                     .await?;
                 self.write_line(class, "  DFU       - Reboot to USB bootloader (UF2 mode)")
                     .await?;
@@ -375,6 +451,10 @@ pub enum ConsoleCommand {
     Sleep(u32),
     Time,
     SetTime(crate::rtc::TimeData),
+    Battery,
+    Reset,
+    Version,
+    Clear,
     Dfu,
     Help,
 }
@@ -427,6 +507,10 @@ pub fn parse_command(cmd: &str) -> Option<ConsoleCommand> {
                 }))
             }
         }
+        "BATTERY" | "VBAT" => Some(ConsoleCommand::Battery),
+        "RESET" => Some(ConsoleCommand::Reset),
+        "VERSION" | "VER" => Some(ConsoleCommand::Version),
+        "CLEAR" => Some(ConsoleCommand::Clear),
         "DFU" => Some(ConsoleCommand::Dfu),
         "HELP" | "?" => Some(ConsoleCommand::Help),
         _ => None,
