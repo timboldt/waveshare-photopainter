@@ -1,47 +1,16 @@
 #![no_std]
 #![no_main]
 
-// Original C code behavior:
-//
-// init:
-//   stdio logging
-//   epd spi
-//   sd spi
-//   rtc i2c
-//   VBAT ADC on pin 29
-//   gpio init:
-//     4x epd pins
-//     2x led pins
-//     3x charge/battery pins
-//     2x power control pins
-// watchdog enable
-// sleep 1s
-// rtc init
-// rtc set alarm
-// enable charge state IRQ callback
-// if battery is low:
-//   disable alarm
-//   flash low power led
-//   turn power off
-// led on
-// read SD card
-// if no main power
-//    run display
-//    turn power off
-// in a loop:
-//    wait for key press
-//    run display
-
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_rp::{
-    adc::{self, Adc, Channel, InterruptHandler},
+    adc::{self, Adc, Channel, InterruptHandler as AdcInterruptHandler},
     bind_interrupts,
     clocks::RoscRng,
     gpio,
     i2c::{self},
-    peripherals::I2C1,
+    peripherals::{I2C1, USB},
     spi::{self, Spi},
     watchdog::*,
 };
@@ -53,32 +22,39 @@ use panic_probe as _;
 mod epaper;
 mod graphics;
 mod rtc;
+mod usb_console;
 
 // Minimum power is 3.1V.
 const MIN_BATTERY_MILLIVOLTS: u32 = 3100;
 
 bind_interrupts!(struct Irqs {
-    ADC_IRQ_FIFO => InterruptHandler;
+    ADC_IRQ_FIFO => AdcInterruptHandler;
     I2C1_IRQ => i2c::InterruptHandler<I2C1>;
 });
 
-// struct DummyTimesource();
+/// Run a single display update cycle
+pub async fn run_display_update(
+    epaper: &mut epaper::EPaper7In3F<embassy_rp::peripherals::SPI1>,
+    watchdog: &mut Watchdog,
+    rng: &mut RoscRng,
+    activity_led: &mut Output<'_>,
+) -> Result<(), ()> {
+    info!("Running display update");
+    activity_led.set_high();
 
-// // TODO(tboldt): Implement the TimeSource trait with the RTC.
-// impl embedded_sdmmc::TimeSource for DummyTimesource {
-//     fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
-//         embedded_sdmmc::Timestamp {
-//             year_since_1970: 0,
-//             zero_indexed_month: 0,
-//             zero_indexed_day: 0,
-//             hours: 0,
-//             minutes: 0,
-//             seconds: 0,
-//         }
-//     }
-// }
+    epaper.init(watchdog).await.map_err(|_| ())?;
+    let display_buf = epaper::DisplayBuffer::get();
+    draw_random_walk_art(display_buf, rng.next_u64()).map_err(|_| ())?;
+    epaper
+        .show_image(display_buf, watchdog)
+        .await
+        .map_err(|_| ())?;
+    epaper.deep_sleep().await.map_err(|_| ())?;
 
-//static mut DISPLAY_BUF: epaper::DisplayBuffer = epaper::DisplayBuffer::default();
+    activity_led.set_low();
+    info!("Display update complete");
+    Ok(())
+}
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -102,12 +78,6 @@ async fn main(_spawner: Spawner) {
     // Mystery pin 23, aka "Power_Mode".
     let _power_mode_pin = Input::new(p.PIN_23, Pull::None);
 
-    // If USB connected, set up logging over USB.
-    if vbus_state_pin.is_high() {
-        info!("USB power detected.");
-        // TODO(tboldt): Set up logging over USB.
-    }
-
     // Set up E-Paper Display
     let epd_clk = p.PIN_10;
     let epd_mosi = p.PIN_11;
@@ -123,39 +93,6 @@ async fn main(_spawner: Spawner) {
 
     let mut epaper =
         epaper::EPaper7In3F::new(epd_spi, epd_reset_pin, epd_dc_pin, epd_cs_pin, epd_busy_pin);
-
-    // // Setup SD card SPI
-    // let sdcard_clk = p.PIN_2;
-    // let sdcard_mosi = p.PIN_3;
-    // let sdcard_miso = p.PIN_4;
-    // let mut sdcard_config = spi::Config::default();
-
-    // // Before talking to the SD Card, the caller needs to send 74 clocks cycles on the SPI Clock
-    // line, at 400 kHz, with no chip-select asserted (or at least, not the chip-select of the SD
-    // Card). sdcard_config.frequency = 400_000;
-    // let sdcard_spi = Spi::new_blocking(p.SPI0, sdcard_clk, sdcard_mosi, sdcard_miso,
-    // sdcard_config);
-
-    // // Use a dummy cs pin here, for embedded-hal SpiDevice compatibility reasons
-    // let sdcard_spi_dev = ExclusiveDevice::new_no_delay(sdcard_spi, DummyCsPin);
-    // // Real cs pin
-    // let sdcard_cs_pin = Output::new(p.PIN_5, Level::High);
-
-    // let sdcard = SdCard::new(sdcard_spi_dev, sdcard_cs_pin, embassy_time::Delay);
-
-    // //Once the card is initialized, the SPI clock can go faster.
-    // let mut sdcard_config = spi::Config::default();
-    // sdcard_config.frequency = 12_500_000;
-    // sdcard
-    //     .spi(|dev| dev.bus_mut().set_config(&sdcard_config))
-    //     .ok();
-    // let mut volume_mgr = embedded_sdmmc::VolumeManager::new(sdcard, DummyTimesource());
-    // let mut volume0 = volume_mgr
-    //     .open_volume(embedded_sdmmc::VolumeIdx(0))
-    //     .unwrap();
-    // let mut root_dir = volume0.open_root_dir().unwrap();
-    // let pic_dir = root_dir.open_dir("pic").unwrap();
-    // //xxx iterate_dir()
 
     // Setup Real Time Clock
     let rtc_sda = p.PIN_14;
@@ -183,41 +120,87 @@ async fn main(_spawner: Spawner) {
     Timer::after_millis(1000).await;
 
     rtc.init().await.unwrap();
-    // TODO(tboldt): rtc init
-    // TODO(tboldt): rtc set alarm
-    // TODO(tboldt): enable charge state IRQ callback
-
-    // TODO(tboldt): main loop
-    // if battery is low:
-    //   disable alarm
-    //   flash low power led
-    //   turn power off
-    // led on
-    // read SD card
-    // if no main power
-    //    run display
-    //    turn power off
-    // in a loop:
-    //    wait for key press
-    //    run display
 
     info!("Init done");
 
+    // Check if USB power is connected - if so, enter console mode
+    if vbus_state_pin.is_high() {
+        info!("USB power detected - entering console mode");
+        run_usb_console_mode(
+            p.USB,
+            &mut epaper,
+            &mut watchdog,
+            &mut rng,
+            &mut activity_led_pin,
+        )
+        .await;
+    } else {
+        info!("Running on battery - entering normal mode");
+        run_normal_mode(
+            &mut epaper,
+            &mut watchdog,
+            &mut rng,
+            &mut activity_led_pin,
+            &mut power_led_pin,
+            &user_button_pin,
+            &charge_state_pin,
+            &vbus_state_pin,
+            &mut battery_voltage,
+        )
+        .await;
+    }
+
+    // Power down
+    epd_enable_pin.set_low();
+    battery_enable_pin.set_low();
+
+    loop {
+        Timer::after(Duration::from_millis(1000)).await;
+    }
+}
+
+/// USB Console mode - wait for commands over serial
+async fn run_usb_console_mode<'d>(
+    usb: embassy_rp::Peri<'d, USB>,
+    epaper: &mut epaper::EPaper7In3F<embassy_rp::peripherals::SPI1>,
+    watchdog: &mut Watchdog,
+    rng: &mut RoscRng,
+    activity_led: &mut Output<'_>,
+) -> ! {
+    let mut console = usb_console::UsbConsole::new();
+
+    // This function never returns
+    console.run(usb, epaper, watchdog, rng, activity_led).await
+}
+
+/// Normal mode - run display on button press or initially
+#[allow(clippy::too_many_arguments)]
+async fn run_normal_mode(
+    epaper: &mut epaper::EPaper7In3F<embassy_rp::peripherals::SPI1>,
+    watchdog: &mut Watchdog,
+    rng: &mut RoscRng,
+    activity_led: &mut Output<'_>,
+    power_led: &mut Output<'_>,
+    user_button: &Input<'_>,
+    charge_state: &Input<'_>,
+    vbus_state: &Input<'_>,
+    battery_voltage: &mut impl FnMut() -> u32,
+) {
     let mut show_display = true;
     let mut button_press_count = 0;
+
     'main: loop {
-        let running_on_battery = vbus_state_pin.is_low();
+        let running_on_battery = vbus_state.is_low();
         info!("Running on battery? {}", running_on_battery);
 
         // If the battery is low, flash the low power LED, disable the alarm, and turn off the
         // power.
         if running_on_battery && battery_voltage() < MIN_BATTERY_MILLIVOLTS {
             info!("Battery is low");
-            // TODO(tboldt): Disable the alarm, since there is not enough power to wake up.
             for _ in 0..5 {
-                power_led_pin.set_high();
+                power_led.set_high();
                 Timer::after(Duration::from_millis(200)).await;
-                power_led_pin.set_low();
+                power_led.set_low();
                 Timer::after(Duration::from_millis(100)).await;
             }
             // Exit and power down.
@@ -226,15 +209,7 @@ async fn main(_spawner: Spawner) {
 
         // Run the display.
         if show_display {
-            activity_led_pin.set_high();
-            epaper.init(&mut watchdog).await.unwrap();
-            let display_buf = epaper::DisplayBuffer::get();
-            draw_random_walk_art(display_buf, rng.next_u64()).unwrap();
-            epaper.show_image(display_buf, &mut watchdog).await.unwrap();
-            //epaper.show_seven_color_blocks(&mut watchdog).await.unwrap();
-            //epaper.clear(epaper::Color::White, &mut watchdog).await.unwrap();
-            epaper.deep_sleep().await.unwrap();
-            activity_led_pin.set_low();
+            let _ = run_display_update(epaper, watchdog, rng, activity_led).await;
             show_display = false;
         }
 
@@ -242,18 +217,17 @@ async fn main(_spawner: Spawner) {
             break 'main;
         }
 
-        if charge_state_pin.is_low() {
+        if charge_state.is_low() {
             // Charging.
-            power_led_pin.set_high();
+            power_led.set_high();
         } else {
             // Not charging.
-            power_led_pin.set_low();
+            power_led.set_low();
         }
 
-        if user_button_pin.is_low() {
+        if user_button.is_low() {
             button_press_count += 1;
             if button_press_count > 3 {
-                // TODO(tboldt): Restrict how requently the display can be shown.
                 show_display = true;
                 button_press_count = 0;
             }
@@ -263,15 +237,5 @@ async fn main(_spawner: Spawner) {
 
         watchdog.feed();
         Timer::after(Duration::from_millis(200)).await;
-    }
-
-    epd_enable_pin.set_low();
-
-    // Disconnect the battery.
-    battery_enable_pin.set_low();
-
-    loop {
-        // Should be unreachable.
-        Timer::after(Duration::from_millis(1000)).await;
     }
 }

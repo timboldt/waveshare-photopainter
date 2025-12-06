@@ -15,12 +15,16 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread", "defmt"] }
 embassy-time = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-rp = { version = "0.8", features = ["defmt", "time-driver", "rp2040"] }
+embassy-usb = { version = "0.5", features = ["defmt"] }
+embassy-futures = "0.1"
 embedded-sdmmc = "0.7.0"
 embedded-hal-bus = { version = "0.2", features = ["async"] }
 embassy-embedded-hal = "0.5"
 embedded-graphics = "0.8.1"
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
 embedded-hal-async = "1.0.0"
+embedded-io-async = "0.6"
+heapless = "0.8"
 
 [profile.release]
 lto = true
