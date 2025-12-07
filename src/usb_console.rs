@@ -403,10 +403,13 @@ impl UsbConsole {
             }
             ConsoleCommand::Version => {
                 let version = env!("CARGO_PKG_VERSION");
-                let mut buf = [0u8; 64];
-                let msg =
-                    format_no_std::show(&mut buf, format_args!("Firmware version: {}", version))
-                        .unwrap_or("Firmware version");
+                let build_date = env!("BUILD_DATE");
+                let mut buf = [0u8; 128];
+                let msg = format_no_std::show(
+                    &mut buf,
+                    format_args!("Firmware version: {} (built {})", version, build_date),
+                )
+                .unwrap_or("Firmware version");
                 self.write_line(class, msg).await?;
             }
             ConsoleCommand::Clear => {
@@ -444,12 +447,17 @@ impl UsbConsole {
 
                 info!("Resetting to USB boot mode");
 
-                // Reset to USB bootloader mode
+                // Disable interrupts to ensure clean state
+                cortex_m::interrupt::disable();
+
+                // Reset to USB bootloader mode with clean state
+                // The ROM function handles setting up the watchdog scratch registers
+                // and triggering a reset that enters the bootloader
                 embassy_rp::rom_data::reset_to_usb_boot(0, 0);
 
                 // This line should never be reached
                 loop {
-                    Timer::after(Duration::from_secs(1)).await;
+                    cortex_m::asm::wfi();
                 }
             }
             ConsoleCommand::Help => {
