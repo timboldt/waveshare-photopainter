@@ -16,7 +16,7 @@ use embassy_rp::{
 };
 use embassy_time::{Duration, Timer};
 use gpio::{Input, Level, Output, Pull};
-use graphics::draw_random_walk_art;
+use graphics::{draw_calendar_page, draw_random_walk_art};
 use panic_probe as _;
 
 mod epaper;
@@ -59,14 +59,21 @@ bind_interrupts!(struct Irqs {
     I2C1_IRQ => i2c::InterruptHandler<I2C1>;
 });
 
-/// Run a single display update cycle
+/// Run display update with calendar page (default mode)
 pub async fn run_display_update(ctx: &mut DeviceContext) -> Result<(), ()> {
-    info!("Running display update");
+    run_display_calendar(ctx).await
+}
+
+/// Draw random walk art on the display
+pub async fn run_display_random(ctx: &mut DeviceContext) -> Result<(), ()> {
+    info!("Running random walk art display");
     ctx.activity_led.set_high();
 
     ctx.epaper.init(&mut ctx.watchdog).await.map_err(|_| ())?;
     let display_buf = epaper::DisplayBuffer::get();
+
     draw_random_walk_art(display_buf, ctx.rng.next_u64()).map_err(|_| ())?;
+
     ctx.epaper
         .show_image(display_buf, &mut ctx.watchdog)
         .await
@@ -74,7 +81,46 @@ pub async fn run_display_update(ctx: &mut DeviceContext) -> Result<(), ()> {
     ctx.epaper.deep_sleep().await.map_err(|_| ())?;
 
     ctx.activity_led.set_low();
-    info!("Display update complete");
+    info!("Random walk art display complete");
+    Ok(())
+}
+
+/// Draw calendar page with date and quote on the display
+pub async fn run_display_calendar(ctx: &mut DeviceContext) -> Result<(), ()> {
+    info!("Running calendar page display");
+    ctx.activity_led.set_high();
+
+    // Get current time from RTC
+    let current_time = ctx
+        .rtc
+        .get_time()
+        .await
+        .map_err(|_| {
+            info!("Failed to read RTC time, using default");
+        })
+        .unwrap_or(rtc::TimeData {
+            years: 2025,
+            months: 1,
+            days: 1,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+        });
+
+    ctx.epaper.init(&mut ctx.watchdog).await.map_err(|_| ())?;
+    let display_buf = epaper::DisplayBuffer::get();
+
+    // Draw calendar page with current date and quote
+    draw_calendar_page(display_buf, &current_time, ctx.rng.next_u64()).map_err(|_| ())?;
+
+    ctx.epaper
+        .show_image(display_buf, &mut ctx.watchdog)
+        .await
+        .map_err(|_| ())?;
+    ctx.epaper.deep_sleep().await.map_err(|_| ())?;
+
+    ctx.activity_led.set_low();
+    info!("Calendar page display complete");
     Ok(())
 }
 
@@ -177,43 +223,96 @@ async fn run_usb_console_mode<'d>(usb: embassy_rp::Peri<'d, USB>, ctx: DeviceCon
 
 /// Normal mode - run display on button press or initially
 async fn run_normal_mode(mut ctx: DeviceContext) -> ! {
+    let running_on_battery = ctx.vbus_state.is_low();
+    info!("Running on battery? {}", running_on_battery);
+
+    // If the battery is low, flash the low power LED and power down
+    if running_on_battery && ctx.battery_voltage() < MIN_BATTERY_MILLIVOLTS {
+        info!("Battery is low");
+        for _ in 0..5 {
+            ctx.power_led.set_high();
+            Timer::after(Duration::from_millis(200)).await;
+            ctx.power_led.set_low();
+            Timer::after(Duration::from_millis(100)).await;
+        }
+        // Power down
+        ctx.epd_enable.set_low();
+        ctx.battery_enable.set_low();
+        loop {
+            Timer::after(Duration::from_millis(1000)).await;
+        }
+    }
+
+    // Battery mode: Display calendar, set 6am alarm, and power off
+    if running_on_battery {
+        info!("Battery mode: displaying calendar and setting 6am alarm");
+
+        // Display the calendar
+        let _ = run_display_calendar(&mut ctx).await;
+
+        // Get current time and calculate next 6am
+        let current_time = ctx.rtc.get_time().await.unwrap_or(rtc::TimeData {
+            years: 2025,
+            months: 1,
+            days: 1,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+        });
+
+        let alarm_time = rtc::calculate_next_6am(&current_time);
+        info!(
+            "Current time: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            current_time.years,
+            current_time.months,
+            current_time.days,
+            current_time.hours,
+            current_time.minutes,
+            current_time.seconds
+        );
+        info!(
+            "Setting alarm for: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            alarm_time.years,
+            alarm_time.months,
+            alarm_time.days,
+            alarm_time.hours,
+            alarm_time.minutes,
+            alarm_time.seconds
+        );
+
+        // Set the RTC alarm and clear any existing alarm flag
+        let _ = ctx.rtc.clear_alarm_flag().await;
+        let _ = ctx.rtc.set_alarm(&alarm_time).await;
+
+        info!("Powering down until 6am");
+
+        // Power down
+        ctx.epd_enable.set_low();
+        ctx.battery_enable.set_low();
+
+        loop {
+            Timer::after(Duration::from_millis(1000)).await;
+        }
+    }
+
+    // USB mode: Wait for button presses and show display on demand
+    info!("USB mode: waiting for button presses");
     let mut show_display = true;
     let mut button_press_count = 0;
 
-    'main: loop {
-        let running_on_battery = ctx.vbus_state.is_low();
-        info!("Running on battery? {}", running_on_battery);
-
-        // If the battery is low, flash the low power LED, disable the alarm, and turn off the
-        // power.
-        if running_on_battery && ctx.battery_voltage() < MIN_BATTERY_MILLIVOLTS {
-            info!("Battery is low");
-            for _ in 0..5 {
-                ctx.power_led.set_high();
-                Timer::after(Duration::from_millis(200)).await;
-                ctx.power_led.set_low();
-                Timer::after(Duration::from_millis(100)).await;
-            }
-            // Exit and power down.
-            break 'main;
-        }
-
-        // Run the display.
-        if show_display {
-            let _ = run_display_update(&mut ctx).await;
-            show_display = false;
-        }
-
-        if running_on_battery {
-            break 'main;
-        }
-
+    loop {
         if ctx.charge_state.is_low() {
             // Charging.
             ctx.power_led.set_high();
         } else {
             // Not charging.
             ctx.power_led.set_low();
+        }
+
+        // Run the display on first boot or button press
+        if show_display {
+            let _ = run_display_update(&mut ctx).await;
+            show_display = false;
         }
 
         if ctx.user_button.is_low() {
@@ -228,13 +327,5 @@ async fn run_normal_mode(mut ctx: DeviceContext) -> ! {
 
         ctx.watchdog.feed();
         Timer::after(Duration::from_millis(200)).await;
-    }
-
-    // Power down
-    ctx.epd_enable.set_low();
-    ctx.battery_enable.set_low();
-
-    loop {
-        Timer::after(Duration::from_millis(1000)).await;
     }
 }

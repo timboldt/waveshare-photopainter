@@ -205,11 +205,23 @@ impl UsbConsole {
         cmd: ConsoleCommand,
     ) -> Result<(), EndpointError> {
         match cmd {
-            ConsoleCommand::Go => {
-                self.write_line(class, "Running display update...").await?;
-                match crate::run_display_update(ctx).await {
+            ConsoleCommand::DrawRandom => {
+                self.write_line(class, "Drawing random walk art...").await?;
+                match crate::run_display_random(ctx).await {
                     Ok(()) => {
-                        self.write_line(class, "Display update complete!").await?;
+                        self.write_line(class, "Random walk art complete!").await?;
+                    }
+                    Err(()) => {
+                        self.write_line(class, "ERROR: Display update failed")
+                            .await?;
+                    }
+                }
+            }
+            ConsoleCommand::DrawCalendar => {
+                self.write_line(class, "Drawing calendar page...").await?;
+                match crate::run_display_calendar(ctx).await {
+                    Ok(()) => {
+                        self.write_line(class, "Calendar page complete!").await?;
                     }
                     Err(()) => {
                         self.write_line(class, "ERROR: Display update failed")
@@ -442,29 +454,48 @@ impl UsbConsole {
             }
             ConsoleCommand::Help => {
                 self.write_line(class, "Available commands:").await?;
-                self.write_line(class, "  GO        - Run display update (random art)")
+                self.write_line(class, "Display Commands:").await?;
+                self.write_line(
+                    class,
+                    "  DRAWCALENDAR - Draw calendar page with date and quote",
+                )
+                .await?;
+                self.write_line(class, "  DRAWRANDOM   - Draw random walk art")
                     .await?;
-                self.write_line(class, "  CLEAR     - Clear display to white")
+                self.write_line(class, "  GO           - Alias for DRAWCALENDAR")
                     .await?;
-                self.write_line(class, "  SLEEP n   - Deep sleep (power off) for n seconds")
+                self.write_line(class, "  CLEAR        - Clear display to white")
                     .await?;
-                self.write_line(class, "              RTC alarm will power device back on")
-                    .await?;
-                self.write_line(class, "  TIME      - Display current RTC time")
+                self.write_line(class, "").await?;
+                self.write_line(class, "RTC Commands:").await?;
+                self.write_line(class, "  TIME         - Display current RTC time")
                     .await?;
                 self.write_line(class, "  SETTIME Y M D H M S - Set RTC time")
                     .await?;
-                self.write_line(class, "              Example: SETTIME 2025 12 6 14 39 30")
+                self.write_line(
+                    class,
+                    "                 Example: SETTIME 2025 12 6 14 39 30",
+                )
+                .await?;
+                self.write_line(
+                    class,
+                    "  SLEEP n      - Deep sleep for n seconds, RTC alarm wakes",
+                )
+                .await?;
+                self.write_line(class, "").await?;
+                self.write_line(class, "System Commands:").await?;
+                self.write_line(class, "  BATTERY      - Show battery voltage and status")
                     .await?;
-                self.write_line(class, "  BATTERY   - Show battery voltage and status")
+                self.write_line(class, "  VERSION      - Show firmware version")
                     .await?;
-                self.write_line(class, "  VERSION   - Show firmware version")
+                self.write_line(class, "  RESET        - Soft reset device")
                     .await?;
-                self.write_line(class, "  RESET     - Soft reset device")
-                    .await?;
-                self.write_line(class, "  DFU       - Reboot to USB bootloader (UF2 mode)")
-                    .await?;
-                self.write_line(class, "  HELP or ? - Show this help")
+                self.write_line(
+                    class,
+                    "  DFU          - Reboot to USB bootloader (UF2 mode)",
+                )
+                .await?;
+                self.write_line(class, "  HELP or ?    - Show this help")
                     .await?;
             }
         }
@@ -474,7 +505,8 @@ impl UsbConsole {
 
 #[derive(Debug, Clone, Copy)]
 pub enum ConsoleCommand {
-    Go,
+    DrawRandom,
+    DrawCalendar,
     Sleep(u32),
     Time,
     SetTime(crate::rtc::TimeData),
@@ -503,7 +535,9 @@ pub fn parse_command(cmd: &str) -> Option<ConsoleCommand> {
     }
 
     match parts[0] {
-        "GO" => Some(ConsoleCommand::Go),
+        "DRAWRANDOM" => Some(ConsoleCommand::DrawRandom),
+        "DRAWCALENDAR" | "GO" => Some(ConsoleCommand::DrawCalendar), /* GO is alias for */
+        // DRAWCALENDAR
         "SLEEP" => {
             if parts.len() < 2 {
                 None

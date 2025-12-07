@@ -89,6 +89,52 @@ pub fn add_seconds_to_time(time: &TimeData, seconds_to_add: u32) -> TimeData {
     result
 }
 
+/// Calculate the next 6am time from current time
+/// If current time is before 6am today, returns 6am today
+/// If current time is 6am or later, returns 6am tomorrow
+pub fn calculate_next_6am(current: &TimeData) -> TimeData {
+    let mut alarm = *current;
+    alarm.hours = 6;
+    alarm.minutes = 0;
+    alarm.seconds = 0;
+
+    // If current time is already past 6am, advance to next day
+    if current.hours >= 6 {
+        alarm.days += 1;
+
+        // Get days in current month
+        let days_in_month = match alarm.months {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 => {
+                // Check for leap year
+                let is_leap = (alarm.years.is_multiple_of(4) && !alarm.years.is_multiple_of(100))
+                    || alarm.years.is_multiple_of(400);
+                if is_leap {
+                    29
+                } else {
+                    28
+                }
+            }
+            _ => 31, // Fallback
+        };
+
+        // Handle month rollover
+        if alarm.days > days_in_month {
+            alarm.days = 1;
+            alarm.months += 1;
+
+            // Handle year rollover
+            if alarm.months > 12 {
+                alarm.months = 1;
+                alarm.years += 1;
+            }
+        }
+    }
+
+    alarm
+}
+
 use embassy_rp::i2c::{self, Async};
 use embassy_time::Timer;
 
