@@ -41,6 +41,16 @@ pub struct TimeData {
     pub seconds: u16,
 }
 
+/// Default time value used when RTC is not available or fails to read
+pub const DEFAULT_TIME: TimeData = TimeData {
+    years: 2025,
+    months: 1,
+    days: 1,
+    hours: 0,
+    minutes: 0,
+    seconds: 0,
+};
+
 // Helper functions for BCD conversion
 fn dec_to_bcd(val: u8) -> u8 {
     ((val / 10) << 4) | (val % 10)

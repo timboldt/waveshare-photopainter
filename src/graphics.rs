@@ -14,6 +14,18 @@ use crate::{
     rtc::TimeData,
 };
 
+// Calendar layout constants
+const BORDER_MARGIN: i32 = 100;
+const DECORATIVE_LINE_Y: i32 = 270;
+const QUOTE_START_Y: i32 = 300;
+const LINE_HEIGHT: i32 = 30;
+const MAX_CHARS_PER_LINE: usize = 40;
+
+// Random walk art constants
+const WALK_ITERATIONS: usize = 2000;
+const WALK_LINE_WIDTH: u32 = 3;
+const WALK_STEP_SIZE: i32 = 6;
+
 pub fn draw_random_walk_art(
     display: &mut DisplayBuffer,
     seed: u64,
@@ -35,12 +47,12 @@ pub fn draw_random_walk_art(
     let mut start_x = EPD_7IN3F_WIDTH as i32 / 2;
     let mut start_y = EPD_7IN3F_HEIGHT as i32 / 2;
     for color in colors {
-        let line_style = PrimitiveStyle::with_stroke(color, 3);
+        let line_style = PrimitiveStyle::with_stroke(color, WALK_LINE_WIDTH);
         let mut p = Point::new(start_x, start_y);
-        for _ in 0..2000 {
+        for _ in 0..WALK_ITERATIONS {
             let prev_p = p;
             let r = rng.gen_range(0..4);
-            let step_size = 6;
+            let step_size = WALK_STEP_SIZE;
             match r {
                 0 => p.x += step_size,
                 1 => p.x -= step_size,
@@ -209,10 +221,8 @@ fn day_of_year(month: u16, day: u16, year: u16) -> u16 {
 pub fn draw_calendar_page(
     display: &mut DisplayBuffer,
     time: &TimeData,
-    seed: u64,
+    _seed: u64,
 ) -> Result<(), crate::epaper::Error> {
-    let _rng = SmallRng::seed_from_u64(seed);
-
     // Clear to white background
     display.clear(Rgb888::WHITE)?;
 
@@ -292,15 +302,15 @@ pub fn draw_calendar_page(
 
     // Decorative line
     Line::new(
-        Point::new(100, 270),
-        Point::new((EPD_7IN3F_WIDTH - 100) as i32, 270),
+        Point::new(BORDER_MARGIN, DECORATIVE_LINE_Y),
+        Point::new(EPD_7IN3F_WIDTH as i32 - BORDER_MARGIN, DECORATIVE_LINE_Y),
     )
     .into_styled(PrimitiveStyle::with_stroke(accent_color, 2))
     .draw(display)?;
 
     // Quote - word wrap it manually for now
-    let quote_y_start = 300;
-    let line_height = 30;
+    let quote_y_start = QUOTE_START_Y;
+    let line_height = LINE_HEIGHT;
 
     // Simple word wrapping for quote text
     let words: heapless::Vec<&str, 32> = quote_text.split_whitespace().collect();
@@ -319,8 +329,8 @@ pub fn draw_calendar_page(
             temp
         };
 
-        // Rough estimate: 40 chars per line for PROFONT_18_POINT
-        if test_line.len() > 40 && !current_line.is_empty() {
+        // Rough estimate: MAX_CHARS_PER_LINE for PROFONT_18_POINT
+        if test_line.len() > MAX_CHARS_PER_LINE && !current_line.is_empty() {
             // Draw current line
             Text::with_alignment(
                 &current_line,

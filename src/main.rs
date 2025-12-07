@@ -24,8 +24,11 @@ mod graphics;
 mod rtc;
 mod usb_console;
 
-// Minimum power is 3.1V.
-const MIN_BATTERY_MILLIVOLTS: u32 = 3100;
+/// Minimum battery voltage (3.1V) - below this, the device will shut down
+pub const MIN_BATTERY_MILLIVOLTS: u32 = 3100;
+
+/// E-paper SPI frequency: 8 MHz (maximum supported by the display)
+const EPD_SPI_FREQUENCY: u32 = 8_000_000;
 
 /// Context struct that owns all device peripherals
 pub struct DeviceContext {
@@ -47,10 +50,19 @@ pub struct DeviceContext {
 
 impl DeviceContext {
     /// Read battery voltage in millivolts
+    /// Returns 0 if ADC read fails (should be rare in normal operation)
     pub fn battery_voltage(&mut self) -> u32 {
-        let v = self.adc.blocking_read(&mut self.v_sys).unwrap();
-        // 3.3V (3300mV) reference voltage, 3x voltage divider, 12-bit ADC (4096).
-        v as u32 * 3300 * 3 / 4096
+        match self.adc.blocking_read(&mut self.v_sys) {
+            Ok(v) => {
+                // 3.3V (3300mV) reference voltage, 3x voltage divider, 12-bit ADC (4096).
+                v as u32 * 3300 * 3 / 4096
+            }
+            Err(_) => {
+                // ADC read failed - return 0 to indicate error
+                // This should be rare and indicates a hardware issue
+                0
+            }
+        }
     }
 }
 
@@ -98,14 +110,7 @@ pub async fn run_display_calendar(ctx: &mut DeviceContext) -> Result<(), ()> {
         .map_err(|_| {
             info!("Failed to read RTC time, using default");
         })
-        .unwrap_or(rtc::TimeData {
-            years: 2025,
-            months: 1,
-            days: 1,
-            hours: 0,
-            minutes: 0,
-            seconds: 0,
-        });
+        .unwrap_or(rtc::DEFAULT_TIME);
 
     ctx.epaper.init(&mut ctx.watchdog).await.map_err(|_| ())?;
     let display_buf = epaper::DisplayBuffer::get();
@@ -150,7 +155,7 @@ async fn main(_spawner: Spawner) {
     let epd_clk = p.PIN_10;
     let epd_mosi = p.PIN_11;
     let mut epd_config = spi::Config::default();
-    epd_config.frequency = 8_000_000;
+    epd_config.frequency = EPD_SPI_FREQUENCY;
     let epd_spi = Spi::new_txonly(p.SPI1, epd_clk, epd_mosi, p.DMA_CH0, epd_config);
 
     let epd_reset_pin = Output::new(p.PIN_12, Level::Low);
@@ -251,14 +256,7 @@ async fn run_normal_mode(mut ctx: DeviceContext) -> ! {
         let _ = run_display_calendar(&mut ctx).await;
 
         // Get current time and calculate next 6am
-        let current_time = ctx.rtc.get_time().await.unwrap_or(rtc::TimeData {
-            years: 2025,
-            months: 1,
-            days: 1,
-            hours: 0,
-            minutes: 0,
-            seconds: 0,
-        });
+        let current_time = ctx.rtc.get_time().await.unwrap_or(rtc::DEFAULT_TIME);
 
         let alarm_time = rtc::calculate_next_6am(&current_time);
         info!(

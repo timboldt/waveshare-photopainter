@@ -403,7 +403,7 @@ impl UsbConsole {
             }
             ConsoleCommand::Version => {
                 let version = env!("CARGO_PKG_VERSION");
-                let build_date = env!("BUILD_DATE");
+                let build_date = option_env!("BUILD_DATE").unwrap_or("unknown");
                 let mut buf = [0u8; 128];
                 let msg = format_no_std::show(
                     &mut buf,

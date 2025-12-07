@@ -17,17 +17,40 @@ impl DisplayBuffer {
     /// Returns a mutable reference to the one and only display buffer.
     /// The mutable static is necessary because a single display buffer needs about 80% of all the
     /// RAM on a Pico.
+    ///
+    /// # Safety
+    /// This is safe in the single-threaded embedded context.
+    /// The RP2040 runs single-threaded with no preemption in this application.
     pub fn get() -> &'static mut Self {
         unsafe { &mut *core::ptr::addr_of_mut!(DISPLAY_BUF) }
     }
 
-    pub fn set_pixel(&mut self, x: usize, y: usize, color: Color) {
-        // Apply 180-degree rotation if enabled
-        let (x, y) = if self.rotate_180 {
+    /// Apply 180-degree rotation to coordinates if enabled
+    #[inline]
+    fn apply_rotation_usize(&self, x: usize, y: usize) -> (usize, usize) {
+        if self.rotate_180 {
             (EPD_7IN3F_WIDTH - 1 - x, EPD_7IN3F_HEIGHT - 1 - y)
         } else {
             (x, y)
-        };
+        }
+    }
+
+    /// Apply 180-degree rotation to i32 coordinates if enabled
+    #[inline]
+    fn apply_rotation_i32(&self, x: i32, y: i32) -> (i32, i32) {
+        if self.rotate_180 {
+            (
+                EPD_7IN3F_WIDTH as i32 - 1 - x,
+                EPD_7IN3F_HEIGHT as i32 - 1 - y,
+            )
+        } else {
+            (x, y)
+        }
+    }
+
+    pub fn set_pixel(&mut self, x: usize, y: usize, color: Color) {
+        // Apply 180-degree rotation if enabled
+        let (x, y) = self.apply_rotation_usize(x, y);
 
         let index = (x + y * EPD_7IN3F_WIDTH) / 2;
         let color = color as u8;
@@ -95,14 +118,7 @@ impl DrawTarget for DisplayBuffer {
     {
         for Pixel(coord, color) in pixels.into_iter() {
             // Apply rotation before bounds checking
-            let (x, y) = if self.rotate_180 {
-                (
-                    EPD_7IN3F_WIDTH as i32 - 1 - coord.x,
-                    EPD_7IN3F_HEIGHT as i32 - 1 - coord.y,
-                )
-            } else {
-                (coord.x, coord.y)
-            };
+            let (x, y) = self.apply_rotation_i32(coord.x, coord.y);
 
             if x < 0 || y < 0 || x >= EPD_7IN3F_WIDTH as i32 || y >= EPD_7IN3F_HEIGHT as i32 {
                 continue;
