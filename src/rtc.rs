@@ -7,18 +7,12 @@ const OFFSET_REG: u8 = 0x02;
 #[allow(dead_code)]
 const RAM_BYTE_REG: u8 = 0x03;
 const SECONDS_REG: u8 = 0x04;
-// Time register addresses - not currently used but needed for future time reading functionality
-#[allow(dead_code)]
 const MINUTES_REG: u8 = 0x05;
-#[allow(dead_code)]
 const HOURS_REG: u8 = 0x06;
-#[allow(dead_code)]
 const DAYS_REG: u8 = 0x07;
 #[allow(dead_code)]
 const WEEKDAYS_REG: u8 = 0x08;
-#[allow(dead_code)]
 const MONTHS_REG: u8 = 0x09;
-#[allow(dead_code)]
 const YEARS_REG: u8 = 0x0A;
 // Alarm and timer registers - not currently used but may be needed in the future
 #[allow(dead_code)]
@@ -47,14 +41,11 @@ pub struct TimeData {
     pub seconds: u16,
 }
 
-// Helper functions for BCD conversion - not currently used but may be needed for time
-// reading/setting functionality
-#[allow(dead_code)]
+// Helper functions for BCD conversion
 fn dec_to_bcd(val: u8) -> u8 {
     ((val / 10) << 4) | (val % 10)
 }
 
-#[allow(dead_code)]
 fn bcd_to_dec(val: u8) -> u8 {
     ((val >> 4) * 10) + (val & 0x0F)
 }
@@ -122,11 +113,31 @@ where
     }
 
     pub async fn init(&mut self) -> Result<(), Error> {
+        // Write to Control_1 register
+        // NOTE: Original C code used 0x58 which includes SR bit (software reset)
+        // We use 0x48 to avoid resetting the time on every init
+        // 0x48 = 0b01001000 (reserved bit 6 set, CIE bit 3 set, no reset)
         self.i2c
-            .write_async(PCF85063_ADDRESS, [CONTROL_1_REG, 0x58])
+            .write_async(PCF85063_ADDRESS, [CONTROL_1_REG, 0x48])
             .await
             .map_err(Error::I2cError)?;
         Timer::after_millis(500).await;
+
+        // Clear alarm flag and disable alarm interrupt in Control_2
+        // This prevents boot loops after waking from sleep
+        // Bit 7 (AIE): Alarm Interrupt Enable - set to 0 (disabled)
+        // Bit 6 (AF): Alarm Flag - cleared by writing 0
+        let mut ctrl2 = [0u8; 1];
+        self.i2c
+            .write_read_async(PCF85063_ADDRESS, [CONTROL_2_REG], &mut ctrl2)
+            .await
+            .map_err(Error::I2cError)?;
+        self.i2c
+            .write_async(PCF85063_ADDRESS, [CONTROL_2_REG, ctrl2[0] & 0x3F])
+            .await
+            .map_err(Error::I2cError)?;
+
+        // Check and clear the OS (Oscillator Stop) bit in seconds register
         let mut read_sec = [0u8; 1];
         self.i2c
             .write_read_async(PCF85063_ADDRESS, [SECONDS_REG], &mut read_sec)
@@ -136,10 +147,8 @@ where
             .write_async(PCF85063_ADDRESS, [SECONDS_REG, read_sec[0] | 0x80])
             .await
             .map_err(Error::I2cError)?;
-        self.i2c
-            .write_async(PCF85063_ADDRESS, [CONTROL_2_REG, 0x80])
-            .await
-            .map_err(Error::I2cError)?;
+
+        // Wait for oscillator to stabilize
         for _ in 0..5 {
             self.i2c
                 .write_read_async(PCF85063_ADDRESS, [SECONDS_REG], &mut read_sec)
@@ -250,6 +259,7 @@ where
     }
 
     /// Set time on RTC
+    /// Matches the original Waveshare C implementation which writes each register individually
     pub async fn set_time(&mut self, time: &TimeData) -> Result<(), Error> {
         let years = if time.years >= 2000 {
             time.years - 2000
@@ -257,20 +267,57 @@ where
             time.years
         };
 
-        // Set time registers
+        // Validate year is in valid range for RTC (0-99)
+        if years > 99 {
+            return Err(Error::Timeout); // Use Timeout as generic error
+        }
+
+        // Write each register individually, matching the C implementation
+        // This is critical - the RTC doesn't support multi-byte writes to time registers
+
+        // Set HMS (Hours, Minutes, Seconds)
         self.i2c
             .write_async(
                 PCF85063_ADDRESS,
-                [
-                    SECONDS_REG,
-                    dec_to_bcd(time.seconds as u8) & 0x7F,
-                    dec_to_bcd(time.minutes as u8) & 0x7F,
-                    dec_to_bcd(time.hours as u8) & 0x3F,
-                    dec_to_bcd(time.days as u8) & 0x3F,
-                    0, // weekdays (not used)
-                    dec_to_bcd(time.months as u8) & 0x1F,
-                    dec_to_bcd(years as u8),
-                ],
+                [HOURS_REG, dec_to_bcd(time.hours as u8) & 0x3F],
+            )
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(
+                PCF85063_ADDRESS,
+                [MINUTES_REG, dec_to_bcd(time.minutes as u8) & 0x7F],
+            )
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(
+                PCF85063_ADDRESS,
+                [SECONDS_REG, dec_to_bcd(time.seconds as u8) & 0x7F],
+            )
+            .await
+            .map_err(Error::I2cError)?;
+
+        // Set YMD (Years, Months, Days)
+        self.i2c
+            .write_async(PCF85063_ADDRESS, [YEARS_REG, dec_to_bcd(years as u8)])
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(
+                PCF85063_ADDRESS,
+                [MONTHS_REG, dec_to_bcd(time.months as u8) & 0x1F],
+            )
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(
+                PCF85063_ADDRESS,
+                [DAYS_REG, dec_to_bcd(time.days as u8) & 0x3F],
             )
             .await
             .map_err(Error::I2cError)?;
@@ -279,6 +326,7 @@ where
     }
 
     /// Enable alarm at specific time
+    /// Matches the original Waveshare C implementation which writes each register individually
     pub async fn set_alarm(&mut self, alarm_time: &TimeData) -> Result<(), Error> {
         // Enable alarm interrupt in Control_2
         let mut ctrl2 = [0u8; 1];
@@ -292,16 +340,41 @@ where
             .await
             .map_err(Error::I2cError)?;
 
-        // Set alarm time (enable by clearing bit 7 of each register)
+        // Set alarm time - write each register individually, matching the C implementation
+        // Note: C code writes in order: DAY, HOUR, MINUTES, SECOND
+        self.i2c
+            .write_async(
+                PCF85063_ADDRESS,
+                [DAY_ALARM_REG, dec_to_bcd(alarm_time.days as u8) & 0x7F],
+            )
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(
+                PCF85063_ADDRESS,
+                [HOUR_ALARM_REG, dec_to_bcd(alarm_time.hours as u8) & 0x7F],
+            )
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(
+                PCF85063_ADDRESS,
+                [
+                    MINUTES_ALARM_REG,
+                    dec_to_bcd(alarm_time.minutes as u8) & 0x7F,
+                ],
+            )
+            .await
+            .map_err(Error::I2cError)?;
+
         self.i2c
             .write_async(
                 PCF85063_ADDRESS,
                 [
                     SECOND_ALARM_REG,
                     dec_to_bcd(alarm_time.seconds as u8) & 0x7F,
-                    dec_to_bcd(alarm_time.minutes as u8) & 0x7F,
-                    dec_to_bcd(alarm_time.hours as u8) & 0x7F,
-                    dec_to_bcd(alarm_time.days as u8) & 0x7F,
                 ],
             )
             .await

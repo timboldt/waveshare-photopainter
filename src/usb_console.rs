@@ -108,9 +108,31 @@ impl UsbConsole {
         ctx: &mut crate::DeviceContext,
     ) -> Result<(), EndpointError> {
         loop {
+            // Feed watchdog while waiting for input
+            ctx.watchdog.feed();
+
             let mut buf = [0u8; 1];
-            class.read_packet(&mut buf).await?;
-            let c = buf[0];
+
+            // Use select to either read a packet or timeout to feed watchdog
+            // This prevents watchdog timeout during console inactivity
+            let c = loop {
+                match embassy_futures::select::select(
+                    class.read_packet(&mut buf),
+                    Timer::after(Duration::from_secs(4)),
+                )
+                .await
+                {
+                    embassy_futures::select::Either::First(result) => {
+                        result?;
+                        break buf[0];
+                    }
+                    embassy_futures::select::Either::Second(_) => {
+                        // Timeout - feed watchdog and try again
+                        ctx.watchdog.feed();
+                        continue;
+                    }
+                }
+            };
 
             // Echo the character
             class.write_packet(&[c]).await?;
@@ -283,6 +305,11 @@ impl UsbConsole {
             },
             ConsoleCommand::SetTime(time) => {
                 // Validate time data
+                if time.years < 2000 || time.years > 2099 {
+                    self.write_line(class, "ERROR: Year must be 2000-2099")
+                        .await?;
+                    return Ok(());
+                }
                 if time.months == 0 || time.months > 12 {
                     self.write_line(class, "ERROR: Month must be 1-12").await?;
                     return Ok(());
@@ -374,9 +401,9 @@ impl UsbConsole {
                 self.write_line(class, "Clearing display to white...")
                     .await?;
 
-                // Get display buffer and clear it (0xFF = white)
+                // Get display buffer and clear it (0x11 = White color, two pixels per byte)
                 let display_buf = crate::epaper::DisplayBuffer::get();
-                display_buf.frame_buffer.fill(0xFF);
+                display_buf.frame_buffer.fill(0x11);
 
                 // Initialize and show the cleared display
                 match ctx.epaper.init(&mut ctx.watchdog).await {
@@ -469,7 +496,7 @@ pub fn parse_command(cmd: &str) -> Option<ConsoleCommand> {
         let _ = upper.push(ch.to_ascii_uppercase());
     }
 
-    let parts: heapless::Vec<&str, 4> = upper.split_whitespace().collect();
+    let parts: heapless::Vec<&str, 8> = upper.split_whitespace().collect();
 
     if parts.is_empty() {
         return None;
