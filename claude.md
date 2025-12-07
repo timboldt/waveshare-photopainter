@@ -56,13 +56,14 @@ The project uses the **Embassy** async embedded framework for Rust, providing a 
 
 ```
 src/
-├── main.rs           # Main application logic
+├── main.rs           # Main application logic and mode selection
 ├── epaper/
 │   ├── mod.rs        # E-paper module exports
 │   ├── driver.rs     # EPaper7In3F display driver
 │   └── buffer.rs     # DisplayBuffer and pixel manipulation
 ├── graphics.rs       # Graphics rendering (random walk art)
-└── rtc.rs           # PCF85063 RTC driver
+├── rtc.rs           # PCF85063 RTC driver (I2C)
+└── usb_console.rs   # USB serial console interface
 ```
 
 ## Key Dependencies
@@ -87,38 +88,63 @@ src/
 1. **E-paper display driver** with full async support
    - 7-color display initialization
    - Image rendering from frame buffer
+   - Display clearing (white background)
    - Deep sleep mode
    - Watchdog feeding during long operations
 
 2. **Graphics rendering**
    - Random walk art generation
    - Uses `embedded-graphics` traits
+   - Configurable colors and backgrounds
 
-3. **RTC initialization**
-   - Clock stability check
-   - Basic I2C communication
+3. **RTC (Real-Time Clock)**
+   - Full time reading/writing (year, month, day, hour, minute, second)
+   - Time persists across resets (preserved in RTC)
+   - Alarm functionality with deep sleep wake-up
+   - Proper I2C register access (single-byte writes only)
+   - BCD encoding/decoding for time values
 
-4. **Power management**
+4. **USB Console Mode**
+   - Automatic detection: enters console mode when USB power detected
+   - Serial terminal interface (115200 baud, 8N1)
+   - Full command set (see below)
+   - Watchdog feeding during console inactivity
+   - Command parsing with case-insensitive matching
+
+5. **Power management**
    - Battery voltage monitoring (3.3V * 3 divider)
    - Low battery detection (< 3.1V)
    - USB vs battery power detection
    - Charge state monitoring
    - Automatic power-off on low battery
+   - Deep sleep mode with RTC alarm wake-up
 
-5. **Main loop**
+6. **Normal Mode** (battery operation)
    - Display update on button press (requires 4 presses)
    - Charging indicator LED
-   - Runs on USB power, exits on battery
+   - Automatic power-off when running on battery
    - Watchdog protection (8s timeout)
+
+### USB Console Commands
+When powered via USB, the device enters console mode with the following commands:
+
+- **GO** - Run display update (generates random walk art)
+- **CLEAR** - Clear display to white
+- **TIME** - Display current RTC time
+- **SETTIME Y M D H M S** - Set RTC time (example: `SETTIME 2025 12 6 14 39 30`)
+- **SLEEP n** - Deep sleep for n seconds, RTC alarm will wake and power on
+- **BATTERY** - Show battery voltage and charging status
+- **VERSION** - Show firmware version
+- **RESET** - Soft reset the device
+- **DFU** - Reboot to USB bootloader (UF2 mode) for firmware updates
+- **HELP or ?** - Show command list
 
 ### Not Yet Implemented
 - [ ] SD card reading for image files
-- [ ] RTC time reading/setting
-- [ ] RTC alarm functionality
-- [ ] USB logging
-- [ ] Display refresh rate limiting
-- [ ] Image selection/cycling
-- [ ] Power optimization
+- [ ] Image selection/cycling from SD card
+- [ ] Calendar/appointment display from SD card
+- [ ] Advanced power optimization
+- [ ] Configuration file support
 
 ## Build Configuration
 
@@ -183,6 +209,38 @@ runner = "probe-rs run --chip RP2040"
 cargo clippy --release
 ```
 
+### Using the USB Console
+
+When the device is powered via USB, it automatically enters console mode:
+
+1. **Connect via USB** - Use a USB-C cable to connect the device
+2. **Open a serial terminal** - Use any serial terminal program (picocom, screen, minicom, etc.)
+   ```bash
+   # macOS/Linux
+   picocom -b 115200 /dev/ttyACM0  # or /dev/cu.usbmodem*
+
+   # Or use screen
+   screen /dev/ttyACM0 115200
+   ```
+3. **Enter commands** - Type commands and press Enter
+4. **Get help** - Type `HELP` or `?` to see all available commands
+
+Example session:
+```
+> help
+Available commands:
+  GO        - Run display update (random art)
+  CLEAR     - Clear display to white
+  TIME      - Display current RTC time
+  SETTIME Y M D H M S - Set RTC time
+  ...
+> time
+Time: 2025-12-06 16:25:03
+> battery
+Battery: 4200mV
+USB power connected, not charging (full)
+```
+
 ## Architecture Patterns
 
 ### Async/Await Throughout
@@ -229,6 +287,26 @@ pub struct EPaper7In3F<SPI: embassy_rp::spi::Instance + 'static> {
 ## Original C Code Reference
 The RTC driver was ported from Waveshare's C implementation (v1.0, 2021-02-02). The original behavior is documented at the top of `main.rs`.
 
+## Important Implementation Details
+
+### RTC Register Access
+The PCF85063 RTC chip **does not support multi-byte I2C writes** to time and alarm registers. Each register must be written individually in separate I2C transactions. This is critical for reliable operation.
+
+```rust
+// CORRECT: Write each register individually
+self.i2c.write_async(PCF85063_ADDRESS, [HOURS_REG, value]).await?;
+self.i2c.write_async(PCF85063_ADDRESS, [MINUTES_REG, value]).await?;
+
+// WRONG: Multi-byte write will hang/fail
+self.i2c.write_async(PCF85063_ADDRESS, [HOURS_REG, hours_val, minutes_val]).await?;
+```
+
+### RTC Initialization
+The `init()` function intentionally **does not** perform a software reset (unlike the original C code). This preserves the RTC time across device resets. The original C code always set the time immediately after init, so the reset didn't matter. Our implementation preserves time to support persistent timekeeping.
+
+### USB Console Buffer Size
+The command parser uses a `heapless::Vec<&str, 8>` for parsing command arguments. This supports commands with up to 8 space-separated parts, which is sufficient for SETTIME (7 parts: command + 6 time values).
+
 ## Troubleshooting
 
 ### Build Issues
@@ -237,15 +315,19 @@ The RTC driver was ported from Waveshare's C implementation (v1.0, 2021-02-02). 
 - Verify `elf2uf2-rs` is installed: `cargo install elf2uf2-rs`
 
 ### Runtime Issues
-- **Watchdog timeout**: Display operations are properly feeding watchdog, but if you add long operations, ensure `watchdog.feed()` is called regularly
+- **Watchdog timeout**: Display operations are properly feeding watchdog, but if you add long operations, ensure `watchdog.feed()` is called regularly. The USB console feeds the watchdog every 4 seconds during inactivity.
 - **Display not updating**: Check power enable pin (PIN_16) and verify SPI connections
 - **Battery voltage incorrect**: Verify 3:1 voltage divider on VSYS
+- **RTC time resets on boot**: Ensure `CONTROL_1_REG` is written with 0x48 (not 0x58) to avoid software reset
+- **USB console not appearing**: Verify USB cable supports data (not just charging) and that device detects VBUS (PIN_24 high)
 
 ### Common Mistakes to Avoid
 - Don't use `Timer::after()` without `await` in async contexts
 - Don't forget to feed the watchdog during long operations
 - Remember that the display buffer uses 4 bits per pixel (2 pixels per byte)
 - X coordinate even/odd determines high/low nibble in buffer
+- Don't attempt multi-byte I2C writes to RTC time/alarm registers
+- Ensure command parser buffer is large enough for all commands (currently set to 8 parts)
 
 ## Contributing Guidelines
 
