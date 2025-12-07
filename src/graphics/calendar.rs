@@ -2,18 +2,22 @@ use embedded_graphics::{
     mono_font::MonoTextStyle,
     pixelcolor::Rgb888,
     prelude::*,
-    primitives::{Line, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
+    primitives::{Line, PrimitiveStyle},
     text::{Alignment, Text},
 };
 use profont::{PROFONT_18_POINT, PROFONT_24_POINT};
 use u8g2_fonts::{types::FontColor, FontRenderer};
 
 use crate::{
-    epaper::{DisplayBuffer, EPD_7IN3F_WIDTH},
+    epaper::{DisplayBuffer, EPD_7IN3F_HEIGHT, EPD_7IN3F_WIDTH},
+    graphics::ltree,
     rtc::TimeData,
 };
 
 // Calendar layout constants
+const LEFT_BAR_WIDTH: u32 = 100;
+const CONTENT_CENTER_X: i32 =
+    LEFT_BAR_WIDTH as i32 + (EPD_7IN3F_WIDTH as i32 - LEFT_BAR_WIDTH as i32) / 2;
 const BORDER_MARGIN: i32 = 100;
 const DECORATIVE_LINE_Y: i32 = 270;
 const QUOTE_START_Y: i32 = 300;
@@ -243,7 +247,7 @@ fn day_of_year(month: u16, day: u16, year: u16) -> u16 {
 pub fn draw_calendar_page(
     display: &mut DisplayBuffer,
     time: &TimeData,
-    _seed: u64,
+    seed: u64,
 ) -> Result<(), crate::epaper::Error> {
     // Clear to white background
     display.clear(Rgb888::WHITE)?;
@@ -262,19 +266,21 @@ pub fn draw_calendar_page(
     let medium_style = MonoTextStyle::new(&PROFONT_24_POINT, Rgb888::BLACK);
     let small_style = MonoTextStyle::new(&PROFONT_18_POINT, Rgb888::BLACK);
 
-    // Draw decorative top border
-    let border_style = PrimitiveStyleBuilder::new()
-        .fill_color(accent_color)
-        .build();
-    Rectangle::new(Point::new(0, 0), Size::new(EPD_7IN3F_WIDTH as u32, 10))
-        .into_styled(border_style)
-        .draw(display)?;
+    // Draw decorative L-tree in left bar
+    ltree::draw_ltree(
+        display,
+        accent_color,
+        LEFT_BAR_WIDTH * 2,
+        EPD_7IN3F_HEIGHT as u32,
+        seed,
+    )
+    .ok();
 
     // Day of week at top
     let dow_text = day_of_week_name(dow);
     Text::with_alignment(
         dow_text,
-        Point::new((EPD_7IN3F_WIDTH / 2) as i32, 50),
+        Point::new(CONTENT_CENTER_X, 50),
         medium_style,
         Alignment::Center,
     )
@@ -292,7 +298,7 @@ pub fn draw_calendar_page(
     font_renderer
         .render_aligned(
             day_str.as_str(),
-            Point::new((EPD_7IN3F_WIDTH / 2) as i32, 150),
+            Point::new(CONTENT_CENTER_X, 150),
             u8g2_fonts::types::VerticalPosition::Baseline,
             u8g2_fonts::types::HorizontalAlignment::Center,
             FontColor::Transparent(accent_color),
@@ -304,7 +310,7 @@ pub fn draw_calendar_page(
     let month_text = month_name(time.months);
     Text::with_alignment(
         month_text,
-        Point::new((EPD_7IN3F_WIDTH / 2) as i32, 200),
+        Point::new(CONTENT_CENTER_X, 200),
         large_style,
         Alignment::Center,
     )
@@ -316,15 +322,15 @@ pub fn draw_calendar_page(
 
     Text::with_alignment(
         &year_str,
-        Point::new((EPD_7IN3F_WIDTH / 2) as i32, 240),
+        Point::new(CONTENT_CENTER_X, 240),
         medium_style,
         Alignment::Center,
     )
     .draw(display)?;
 
-    // Decorative line
+    // Decorative line (with margins in the content area)
     Line::new(
-        Point::new(BORDER_MARGIN, DECORATIVE_LINE_Y),
+        Point::new(LEFT_BAR_WIDTH as i32 + BORDER_MARGIN, DECORATIVE_LINE_Y),
         Point::new(EPD_7IN3F_WIDTH as i32 - BORDER_MARGIN, DECORATIVE_LINE_Y),
     )
     .into_styled(PrimitiveStyle::with_stroke(accent_color, 2))
@@ -356,7 +362,7 @@ pub fn draw_calendar_page(
             // Draw current line
             Text::with_alignment(
                 &current_line,
-                Point::new((EPD_7IN3F_WIDTH / 2) as i32, y_pos),
+                Point::new(CONTENT_CENTER_X, y_pos),
                 small_style,
                 Alignment::Center,
             )
@@ -374,7 +380,7 @@ pub fn draw_calendar_page(
     if !current_line.is_empty() {
         Text::with_alignment(
             &current_line,
-            Point::new((EPD_7IN3F_WIDTH / 2) as i32, y_pos),
+            Point::new(CONTENT_CENTER_X, y_pos),
             small_style,
             Alignment::Center,
         )
@@ -390,7 +396,7 @@ pub fn draw_calendar_page(
     y_pos += 4; // Small gap before author
     Text::with_alignment(
         &author_line,
-        Point::new((EPD_7IN3F_WIDTH / 2) as i32, y_pos),
+        Point::new(CONTENT_CENTER_X, y_pos),
         small_style,
         Alignment::Center,
     )

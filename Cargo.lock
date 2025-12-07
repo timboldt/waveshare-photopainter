@@ -1588,6 +1588,7 @@ dependencies = [
  "embedded-io-async",
  "embedded-sdmmc",
  "heapless 0.8.0",
+ "micromath",
  "panic-probe",
  "portable-atomic",
  "profont",

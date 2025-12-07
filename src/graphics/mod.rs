@@ -1,4 +1,5 @@
 pub mod calendar;
+pub mod ltree;
 pub mod random_walk;
 
 // Re-export main drawing functions for convenience
