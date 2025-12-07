@@ -1111,6 +1111,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "profont"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "016681370a9dd6e7ddb4c1a959922fd59dc45e5ebaa5ff5b13090267898ced34"
+dependencies = [
+ "embedded-graphics",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1449,6 +1458,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
 
 [[package]]
+name = "u8g2-fonts"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a68775e2131c88974e3cc1da37060559090319ea140746cc1e7e7797646415c0"
+dependencies = [
+ "embedded-graphics-core",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1572,7 +1590,9 @@ dependencies = [
  "heapless 0.8.0",
  "panic-probe",
  "portable-atomic",
+ "profont",
  "rand",
+ "u8g2-fonts",
 ]
 
 [[package]]
