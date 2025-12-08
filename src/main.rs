@@ -116,7 +116,7 @@ pub async fn run_display_calendar(ctx: &mut DeviceContext) -> Result<(), ()> {
     let display_buf = epaper::DisplayBuffer::get();
 
     // Draw calendar page with current date and quote
-    draw_calendar_page(display_buf, &current_time, ctx.rng.next_u64()).map_err(|_| ())?;
+    draw_calendar_page(display_buf, &current_time).map_err(|_| ())?;
 
     ctx.epaper
         .show_image(display_buf, &mut ctx.watchdog)

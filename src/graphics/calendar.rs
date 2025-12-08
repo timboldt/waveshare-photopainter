@@ -6,12 +6,11 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use profont::{PROFONT_18_POINT, PROFONT_24_POINT};
-use rand::{rngs::SmallRng, SeedableRng};
 use u8g2_fonts::{types::FontColor, FontRenderer};
 
 use crate::{
     epaper::{DisplayBuffer, EPD_7IN3F_WIDTH},
-    graphics::ltree,
+    graphics::ltree::{self, PATTERN_PEONY, PATTERN_SNOWFLAKE, PATTERN_TREE},
     rtc::TimeData,
 };
 
@@ -246,10 +245,7 @@ fn day_of_year(month: u16, day: u16, year: u16) -> u16 {
 pub fn draw_calendar_page(
     display: &mut DisplayBuffer,
     time: &TimeData,
-    seed: u64,
 ) -> Result<(), crate::epaper::Error> {
-    let mut rng = SmallRng::seed_from_u64(seed);
-
     // Clear to white background
     display.clear(Rgb888::WHITE)?;
 
@@ -258,106 +254,28 @@ pub fn draw_calendar_page(
     let doy = day_of_year(time.months, time.days, time.years);
     let (quote_text, author) = select_quote(doy);
 
-    // Choose accent color randomly but consistently for the day
-    let accent_colors = [Rgb888::RED, Rgb888::GREEN, Rgb888::BLUE];
-    let color_index = (doy as usize) % accent_colors.len();
-    let accent_color = accent_colors[color_index];
-
-    // Text styles - using ProFont for much larger, more readable text
-    let large_style = MonoTextStyle::new(&PROFONT_24_POINT, Rgb888::BLACK);
-    let medium_style = MonoTextStyle::new(&PROFONT_24_POINT, Rgb888::BLACK);
-    let small_style = MonoTextStyle::new(&PROFONT_18_POINT, Rgb888::BLACK);
-
-    // L-system pattern configurations
-    // Match on color_index since Rgb888 struct matching doesn't work reliably
-    // Index: 0 = RED, 1 = GREEN, 2 = BLUE
-    let (axiom, rules, angle, min_iter, max_iter, step_len): (
-        &str,
-        &[(&str, &str)],
-        f32,
-        usize,
-        usize,
-        f32,
-    ) = match color_index {
-        0 => {
-            // RED: The Peony (Closed Gosper Island)
-            // We repeat the base XF sequence 6 times with a turn (-) to close the loop into a flower.
-            (
-                "XF-XF-XF-XF-XF-XF",
-                &[
-                    ("X", "X+YF++YF-FX--FXFX-YF+"),
-                    ("Y", "-FX+YFYF++YF+FX--FX+Y"),
-                ],
-                60.0,
-                3,
-                3,   // MAX 3. Iteration 4 is too heavy for embedded.
-                2.0, // Keep step size large (2.0 - 4.0)
-            )
-        }
-        1 => {
-            // Green: The L-system tree
-            // Instead, we increase step_len and rely on the structure.
-            (
-                "X",
-                &[("X", "F-[[X]+X]+F[+FX]-X"), ("F", "FF")],
-                22.5,
-                5,
-                5,   // Lowered iterations (5 is huge with FF expansion)
-                2.0, // Minimum visible line width
-            )
-        }
-        _ => {
-            // Geometric Rose (Blue)
-            // This is a "Koch Snowflake" variant.
-            (
-                "F++F++F++F++F++F",
-                &[("F", "F-F++F-F")], // Standard Snowflake rule (cleaner than the pipe rule)
-                60.0,
-                3,
-                3,
-                3.0, // Needs distinct lines to look like crystals
-            )
-        }
+    // Choose accent color and pattern consistently for the day (index: 0=RED, 1=GREEN, 2=BLUE)
+    let color_index = (doy as usize) % 3;
+    let (accent_color, pattern) = match color_index {
+        0 => (Rgb888::RED, &PATTERN_PEONY),
+        1 => (Rgb888::GREEN, &PATTERN_TREE),
+        _ => (Rgb888::BLUE, &PATTERN_SNOWFLAKE),
     };
 
-    // Top-left corner
-    ltree::draw_ltree(
-        display,
-        accent_color,
-        100,
-        150,
-        axiom,
-        rules,
-        angle,
-        min_iter,
-        max_iter,
-        step_len,
-        &mut rng,
-    )
-    .ok();
+    // Text styles
+    let heading_style = MonoTextStyle::new(&PROFONT_24_POINT, Rgb888::BLACK);
+    let body_style = MonoTextStyle::new(&PROFONT_18_POINT, Rgb888::BLACK);
 
-    // Bottom-right corner
-    ltree::draw_ltree(
-        display,
-        accent_color,
-        EPD_7IN3F_WIDTH as i32 - 100,
-        150,
-        axiom,
-        rules,
-        angle,
-        min_iter,
-        max_iter,
-        step_len,
-        &mut rng,
-    )
-    .ok();
+    // Draw L-system fractals in corners
+    ltree::draw_ltree(display, accent_color, 100, 150, pattern).ok();
+    ltree::draw_ltree(display, accent_color, EPD_7IN3F_WIDTH as i32 - 100, 150, pattern).ok();
 
     // Day of week at top
     let dow_text = day_of_week_name(dow);
     Text::with_alignment(
         dow_text,
         Point::new(CONTENT_CENTER_X, 50),
-        medium_style,
+        heading_style,
         Alignment::Center,
     )
     .draw(display)?;
@@ -387,7 +305,7 @@ pub fn draw_calendar_page(
     Text::with_alignment(
         month_text,
         Point::new(CONTENT_CENTER_X, 200),
-        large_style,
+        heading_style,
         Alignment::Center,
     )
     .draw(display)?;
@@ -399,7 +317,7 @@ pub fn draw_calendar_page(
     Text::with_alignment(
         &year_str,
         Point::new(CONTENT_CENTER_X, 240),
-        medium_style,
+        heading_style,
         Alignment::Center,
     )
     .draw(display)?;
@@ -439,7 +357,7 @@ pub fn draw_calendar_page(
             Text::with_alignment(
                 &current_line,
                 Point::new(CONTENT_CENTER_X, y_pos),
-                small_style,
+                body_style,
                 Alignment::Center,
             )
             .draw(display)?;
@@ -457,7 +375,7 @@ pub fn draw_calendar_page(
         Text::with_alignment(
             &current_line,
             Point::new(CONTENT_CENTER_X, y_pos),
-            small_style,
+            body_style,
             Alignment::Center,
         )
         .draw(display)?;
@@ -473,7 +391,7 @@ pub fn draw_calendar_page(
     Text::with_alignment(
         &author_line,
         Point::new(CONTENT_CENTER_X, y_pos),
-        small_style,
+        body_style,
         Alignment::Center,
     )
     .draw(display)?;

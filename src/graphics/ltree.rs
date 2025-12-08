@@ -10,16 +10,53 @@ use embedded_graphics::{
     primitives::{Line, PrimitiveStyle},
 };
 use micromath::F32Ext;
-use rand::{rngs::SmallRng, Rng};
 
 use crate::epaper::DisplayBuffer;
 
 /// Configuration
 const TURTLE_STACK_SIZE: usize = 128; // Depth of branching logic ( '[' )
-const RECURSION_LIMIT: usize = 10; // Safety hard-stop
+
+/// Predefined L-system patterns
+pub struct LSystemPattern {
+    pub axiom: &'static str,
+    pub rules: &'static [(&'static str, &'static str)],
+    pub angle: f32,
+    pub iterations: usize,
+    pub step_length: f32,
+}
+
+/// Red: Gosper curve arranged as a 6-fold flower (Peony)
+pub const PATTERN_PEONY: LSystemPattern = LSystemPattern {
+    axiom: "XF-XF-XF-XF-XF-XF",
+    rules: &[
+        ("X", "X+YF++YF-FX--FXFX-YF+"),
+        ("Y", "-FX+YFYF++YF+FX--FX+Y"),
+    ],
+    angle: 60.0,
+    iterations: 3,
+    step_length: 2.0,
+};
+
+/// Green: Classic L-system tree (vine)
+pub const PATTERN_TREE: LSystemPattern = LSystemPattern {
+    axiom: "X",
+    rules: &[("X", "F-[[X]+X]+F[+FX]-X"), ("F", "FF")],
+    angle: 22.5,
+    iterations: 5,
+    step_length: 2.0,
+};
+
+/// Blue: Koch snowflake variant (geometric rose)
+pub const PATTERN_SNOWFLAKE: LSystemPattern = LSystemPattern {
+    axiom: "F++F++F++F++F++F",
+    rules: &[("F", "F-F++F-F")],
+    angle: 60.0,
+    iterations: 3,
+    step_length: 3.0,
+};
 
 /// Represents the state of the drawing cursor
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 struct TurtleState {
     x: f32,
     y: f32,
@@ -27,7 +64,7 @@ struct TurtleState {
 }
 
 /// Bounding box tracker for measurement pass
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 struct BoundingBox {
     min_x: f32,
     max_x: f32,
@@ -230,36 +267,25 @@ fn draw_recursive(turtle: &mut DrawTurtle, sequence: &str, rules: &[(&str, &str)
     }
 }
 
-/// Public Entry Point
-#[allow(clippy::too_many_arguments)]
+/// Draw an L-system pattern centered at the given position
 pub fn draw_ltree(
     display: &mut DisplayBuffer,
     color: Rgb888,
-    x_offset: i32,
-    y_offset: i32,
-    axiom: &str,
-    rules: &[(&str, &str)],
-    angle_degrees: f32,
-    min_iterations: usize,
-    max_iterations: usize,
-    step_length: f32,
-    rng: &mut SmallRng,
+    center_x: i32,
+    center_y: i32,
+    pattern: &LSystemPattern,
 ) -> Result<(), core::convert::Infallible> {
-    let iterations = rng
-        .gen_range(min_iterations..=max_iterations)
-        .min(RECURSION_LIMIT);
-
     // === PASS 1: Measurement ===
     // Run the L-system starting at (0, 0) to find the bounding box
-    let mut measure_turtle = MeasureTurtle::new(step_length, angle_degrees);
-    measure_recursive(&mut measure_turtle, axiom, rules, iterations);
+    let mut measure_turtle = MeasureTurtle::new(pattern.step_length, pattern.angle);
+    measure_recursive(&mut measure_turtle, pattern.axiom, pattern.rules, pattern.iterations);
 
     // Calculate the center of the bounding box
-    let (center_x, center_y) = measure_turtle.bounds.center();
+    let (bbox_center_x, bbox_center_y) = measure_turtle.bounds.center();
 
-    // Calculate adjusted starting position to center the fractal on (x_offset, y_offset)
-    let adjusted_x = x_offset as f32 - center_x;
-    let adjusted_y = y_offset as f32 - center_y;
+    // Calculate adjusted starting position to center the fractal
+    let adjusted_x = center_x as f32 - bbox_center_x;
+    let adjusted_y = center_y as f32 - bbox_center_y;
 
     // === PASS 2: Drawing ===
     // Now draw with the adjusted starting position
@@ -268,10 +294,10 @@ pub fn draw_ltree(
         color,
         adjusted_x,
         adjusted_y,
-        step_length,
-        angle_degrees,
+        pattern.step_length,
+        pattern.angle,
     );
-    draw_recursive(&mut draw_turtle, axiom, rules, iterations);
+    draw_recursive(&mut draw_turtle, pattern.axiom, pattern.rules, pattern.iterations);
 
     Ok(())
 }
