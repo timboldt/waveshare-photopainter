@@ -1,7 +1,8 @@
-//! L-system tree generation
+//! L-system fractal renderer
 //!
-//! Uses a simple L-system to generate a fractal tree pattern.
-//! The tree grows upward in the left bar area of the calendar.
+//! Implements a recursive (streaming) L-system interpreter.
+//! It does not buffer the string; it calculates geometry on the fly.
+//! Includes a measurement pass to center fractals on their starting point.
 
 use embedded_graphics::{
     pixelcolor::Rgb888,
@@ -9,137 +10,268 @@ use embedded_graphics::{
     primitives::{Line, PrimitiveStyle},
 };
 use micromath::F32Ext;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::{rngs::SmallRng, Rng};
 
 use crate::epaper::DisplayBuffer;
 
-/// L-system parameters
-const MAX_LSYSTEM_LENGTH: usize = 2048;
+/// Configuration
+const TURTLE_STACK_SIZE: usize = 128; // Depth of branching logic ( '[' )
+const RECURSION_LIMIT: usize = 10; // Safety hard-stop
 
-/// Generate L-system string
-fn generate_lsystem(
-    axiom: &str,
+/// Represents the state of the drawing cursor
+#[derive(Clone, Copy, Debug)]
+struct TurtleState {
+    x: f32,
+    y: f32,
+    angle: f32,
+}
+
+/// Bounding box tracker for measurement pass
+#[derive(Clone, Copy, Debug)]
+struct BoundingBox {
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+}
+
+impl BoundingBox {
+    fn new() -> Self {
+        Self {
+            min_x: 0.0,
+            max_x: 0.0,
+            min_y: 0.0,
+            max_y: 0.0,
+        }
+    }
+
+    fn update(&mut self, x: f32, y: f32) {
+        if x < self.min_x {
+            self.min_x = x;
+        }
+        if x > self.max_x {
+            self.max_x = x;
+        }
+        if y < self.min_y {
+            self.min_y = y;
+        }
+        if y > self.max_y {
+            self.max_y = y;
+        }
+    }
+
+    fn center(&self) -> (f32, f32) {
+        (
+            (self.min_x + self.max_x) / 2.0,
+            (self.min_y + self.max_y) / 2.0,
+        )
+    }
+}
+
+/// Measurement turtle - tracks bounding box without drawing
+struct MeasureTurtle {
+    state: TurtleState,
+    step_length: f32,
+    turn_angle: f32,
+    stack: heapless::Vec<TurtleState, TURTLE_STACK_SIZE>,
+    bounds: BoundingBox,
+}
+
+impl MeasureTurtle {
+    fn new(step_length: f32, angle_degrees: f32) -> Self {
+        Self {
+            state: TurtleState {
+                x: 0.0,
+                y: 0.0,
+                angle: -core::f32::consts::FRAC_PI_2, // Start pointing UP
+            },
+            step_length,
+            turn_angle: angle_degrees.to_radians(),
+            stack: heapless::Vec::new(),
+            bounds: BoundingBox::new(),
+        }
+    }
+
+    fn execute_command(&mut self, command: char) {
+        match command {
+            'F' => {
+                let (sin, cos) = self.state.angle.sin_cos();
+                self.state.x += cos * self.step_length;
+                self.state.y += sin * self.step_length;
+                self.bounds.update(self.state.x, self.state.y);
+            }
+            '+' => self.state.angle += self.turn_angle,
+            '-' => self.state.angle -= self.turn_angle,
+            '|' => self.state.angle += core::f32::consts::PI,
+            '[' => {
+                self.stack.push(self.state).ok();
+            }
+            ']' => {
+                if let Some(s) = self.stack.pop() {
+                    self.state = s;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Drawing turtle - actually renders to display
+struct DrawTurtle<'a> {
+    display: &'a mut DisplayBuffer,
+    color: Rgb888,
+    state: TurtleState,
+    step_length: f32,
+    turn_angle: f32,
+    stack: heapless::Vec<TurtleState, TURTLE_STACK_SIZE>,
+}
+
+impl<'a> DrawTurtle<'a> {
+    fn new(
+        display: &'a mut DisplayBuffer,
+        color: Rgb888,
+        x: f32,
+        y: f32,
+        step_length: f32,
+        angle_degrees: f32,
+    ) -> Self {
+        Self {
+            display,
+            color,
+            state: TurtleState {
+                x,
+                y,
+                angle: -core::f32::consts::FRAC_PI_2, // Start pointing UP
+            },
+            step_length,
+            turn_angle: angle_degrees.to_radians(),
+            stack: heapless::Vec::new(),
+        }
+    }
+
+    fn execute_command(&mut self, command: char) {
+        match command {
+            'F' => {
+                let (sin, cos) = self.state.angle.sin_cos();
+                let new_x = self.state.x + cos * self.step_length;
+                let new_y = self.state.y + sin * self.step_length;
+
+                let start = Point::new(self.state.x as i32, self.state.y as i32);
+                let end = Point::new(new_x as i32, new_y as i32);
+
+                Line::new(start, end)
+                    .into_styled(PrimitiveStyle::with_stroke(self.color, 1))
+                    .draw(self.display)
+                    .ok();
+
+                self.state.x = new_x;
+                self.state.y = new_y;
+            }
+            '+' => self.state.angle += self.turn_angle,
+            '-' => self.state.angle -= self.turn_angle,
+            '|' => self.state.angle += core::f32::consts::PI,
+            '[' => {
+                self.stack.push(self.state).ok();
+            }
+            ']' => {
+                if let Some(s) = self.stack.pop() {
+                    self.state = s;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Recursive engine for measurement pass
+fn measure_recursive(
+    turtle: &mut MeasureTurtle,
+    sequence: &str,
     rules: &[(&str, &str)],
-    iterations: usize,
-) -> heapless::String<MAX_LSYSTEM_LENGTH> {
-    let mut current = heapless::String::<MAX_LSYSTEM_LENGTH>::new();
-    current.push_str(axiom).ok();
+    depth: usize,
+) {
+    for ch in sequence.chars() {
+        let mut expanded = false;
 
-    for _ in 0..iterations {
-        let mut next = heapless::String::<MAX_LSYSTEM_LENGTH>::new();
-
-        for ch in current.chars() {
-            let mut matched = false;
-            for (pattern, replacement) in rules {
-                if pattern.len() == 1 && pattern.chars().next().unwrap() == ch {
-                    next.push_str(replacement).ok();
-                    matched = true;
+        if depth > 0 {
+            for (key, replacement) in rules {
+                if key.len() == 1 && key.starts_with(ch) {
+                    measure_recursive(turtle, replacement, rules, depth - 1);
+                    expanded = true;
                     break;
                 }
             }
-            if !matched {
-                next.push(ch).ok();
+        }
+
+        if !expanded {
+            turtle.execute_command(ch);
+        }
+    }
+}
+
+/// Recursive engine for drawing pass
+fn draw_recursive(turtle: &mut DrawTurtle, sequence: &str, rules: &[(&str, &str)], depth: usize) {
+    for ch in sequence.chars() {
+        let mut expanded = false;
+
+        if depth > 0 {
+            for (key, replacement) in rules {
+                if key.len() == 1 && key.starts_with(ch) {
+                    draw_recursive(turtle, replacement, rules, depth - 1);
+                    expanded = true;
+                    break;
+                }
             }
         }
 
-        current = next;
+        if !expanded {
+            turtle.execute_command(ch);
+        }
     }
-
-    current
 }
 
-/// Draw L-system tree in the left bar area
+/// Public Entry Point
+#[allow(clippy::too_many_arguments)]
 pub fn draw_ltree(
     display: &mut DisplayBuffer,
     color: Rgb888,
-    bar_width: u32,
-    display_height: u32,
-    seed: u64,
+    x_offset: i32,
+    y_offset: i32,
+    axiom: &str,
+    rules: &[(&str, &str)],
+    angle_degrees: f32,
+    min_iterations: usize,
+    max_iterations: usize,
+    step_length: f32,
+    rng: &mut SmallRng,
 ) -> Result<(), core::convert::Infallible> {
-    let mut rng = SmallRng::seed_from_u64(seed);
+    let iterations = rng
+        .gen_range(min_iterations..=max_iterations)
+        .min(RECURSION_LIMIT);
 
-    // L-system rules for a simple tree
-    // F = draw forward
-    // + = turn right
-    // - = turn left
-    // [ = push state
-    // ] = pop state
-    let axiom = "F";
-    let rules = [("F", "FF+[+F-F-F]-[-F+F+F]")];
+    // === PASS 1: Measurement ===
+    // Run the L-system starting at (0, 0) to find the bounding box
+    let mut measure_turtle = MeasureTurtle::new(step_length, angle_degrees);
+    measure_recursive(&mut measure_turtle, axiom, rules, iterations);
 
-    // Generate L-system with N to N+1 iterations
-    let iterations = 6 + (rng.gen_range(0..2));
-    let lsystem = generate_lsystem(axiom, &rules, iterations);
+    // Calculate the center of the bounding box
+    let (center_x, center_y) = measure_turtle.bounds.center();
 
-    // Drawing parameters
-    let angle = 25.0_f32.to_radians(); // Branch angle
-    let step_length = 10.0; // Length of each forward step (much longer for bigger tree)
+    // Calculate adjusted starting position to center the fractal on (x_offset, y_offset)
+    let adjusted_x = x_offset as f32 - center_x;
+    let adjusted_y = y_offset as f32 - center_y;
 
-    // Start position (bottom center of the bar)
-    let start_x = (bar_width / 3) as f32;
-    let start_y = display_height as f32 - 100.0;
-
-    // Initial direction (pointing up)
-    let mut x = start_x;
-    let mut y = start_y;
-    let mut direction = -core::f32::consts::FRAC_PI_2; // -90 degrees (up)
-
-    // Stack for saving/restoring position and direction
-    let mut stack: heapless::Vec<(f32, f32, f32), 32> = heapless::Vec::new();
-
-    let line_style = PrimitiveStyle::with_stroke(color, 1);
-
-    // Interpret L-system string
-    for ch in lsystem.chars() {
-        match ch {
-            'F' => {
-                // Draw forward
-                let new_x = x + direction.cos() * step_length;
-                let new_y = y + direction.sin() * step_length;
-
-                // Only draw if within bounds
-                if new_x >= 0.0
-                    && new_x < bar_width as f32
-                    && new_y >= 0.0
-                    && new_y < display_height as f32
-                {
-                    Line::new(
-                        Point::new(x as i32, y as i32),
-                        Point::new(new_x as i32, new_y as i32),
-                    )
-                    .into_styled(line_style)
-                    .draw(display)
-                    .ok();
-                }
-
-                x = new_x;
-                y = new_y;
-            }
-            '+' => {
-                // Turn right
-                direction += angle;
-            }
-            '-' => {
-                // Turn left
-                direction -= angle;
-            }
-            '[' => {
-                // Push state
-                stack.push((x, y, direction)).ok();
-            }
-            ']' => {
-                // Pop state
-                if let Some((saved_x, saved_y, saved_dir)) = stack.pop() {
-                    x = saved_x;
-                    y = saved_y;
-                    direction = saved_dir;
-                }
-            }
-            _ => {
-                // Ignore unknown characters
-            }
-        }
-    }
+    // === PASS 2: Drawing ===
+    // Now draw with the adjusted starting position
+    let mut draw_turtle = DrawTurtle::new(
+        display,
+        color,
+        adjusted_x,
+        adjusted_y,
+        step_length,
+        angle_degrees,
+    );
+    draw_recursive(&mut draw_turtle, axiom, rules, iterations);
 
     Ok(())
 }

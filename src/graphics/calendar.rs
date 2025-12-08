@@ -6,18 +6,17 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use profont::{PROFONT_18_POINT, PROFONT_24_POINT};
+use rand::{rngs::SmallRng, SeedableRng};
 use u8g2_fonts::{types::FontColor, FontRenderer};
 
 use crate::{
-    epaper::{DisplayBuffer, EPD_7IN3F_HEIGHT, EPD_7IN3F_WIDTH},
+    epaper::{DisplayBuffer, EPD_7IN3F_WIDTH},
     graphics::ltree,
     rtc::TimeData,
 };
 
 // Calendar layout constants
-const LEFT_BAR_WIDTH: u32 = 100;
-const CONTENT_CENTER_X: i32 =
-    LEFT_BAR_WIDTH as i32 + (EPD_7IN3F_WIDTH as i32 - LEFT_BAR_WIDTH as i32) / 2;
+const CONTENT_CENTER_X: i32 = EPD_7IN3F_WIDTH as i32 / 2;
 const BORDER_MARGIN: i32 = 100;
 const DECORATIVE_LINE_Y: i32 = 270;
 const QUOTE_START_Y: i32 = 300;
@@ -249,6 +248,8 @@ pub fn draw_calendar_page(
     time: &TimeData,
     seed: u64,
 ) -> Result<(), crate::epaper::Error> {
+    let mut rng = SmallRng::seed_from_u64(seed);
+
     // Clear to white background
     display.clear(Rgb888::WHITE)?;
 
@@ -258,21 +259,96 @@ pub fn draw_calendar_page(
     let (quote_text, author) = select_quote(doy);
 
     // Choose accent color randomly but consistently for the day
-    let accent_colors = [Rgb888::RED, Rgb888::GREEN];
-    let accent_color = accent_colors[(doy as usize) % accent_colors.len()];
+    let accent_colors = [Rgb888::RED, Rgb888::GREEN, Rgb888::BLUE];
+    let color_index = (doy as usize) % accent_colors.len();
+    let accent_color = accent_colors[color_index];
 
     // Text styles - using ProFont for much larger, more readable text
     let large_style = MonoTextStyle::new(&PROFONT_24_POINT, Rgb888::BLACK);
     let medium_style = MonoTextStyle::new(&PROFONT_24_POINT, Rgb888::BLACK);
     let small_style = MonoTextStyle::new(&PROFONT_18_POINT, Rgb888::BLACK);
 
-    // Draw decorative L-tree in left bar
+    // L-system pattern configurations
+    // Match on color_index since Rgb888 struct matching doesn't work reliably
+    // Index: 0 = RED, 1 = GREEN, 2 = BLUE
+    let (axiom, rules, angle, min_iter, max_iter, step_len): (
+        &str,
+        &[(&str, &str)],
+        f32,
+        usize,
+        usize,
+        f32,
+    ) = match color_index {
+        0 => {
+            // RED: The Peony (Closed Gosper Island)
+            // We repeat the base XF sequence 6 times with a turn (-) to close the loop into a flower.
+            (
+                "XF-XF-XF-XF-XF-XF",
+                &[
+                    ("X", "X+YF++YF-FX--FXFX-YF+"),
+                    ("Y", "-FX+YFYF++YF+FX--FX+Y"),
+                ],
+                60.0,
+                3,
+                3,   // MAX 3. Iteration 4 is too heavy for embedded.
+                2.0, // Keep step size large (2.0 - 4.0)
+            )
+        }
+        1 => {
+            // Green: The L-system tree
+            // Instead, we increase step_len and rely on the structure.
+            (
+                "X",
+                &[("X", "F-[[X]+X]+F[+FX]-X"), ("F", "FF")],
+                22.5,
+                5,
+                5,   // Lowered iterations (5 is huge with FF expansion)
+                2.0, // Minimum visible line width
+            )
+        }
+        _ => {
+            // Geometric Rose (Blue)
+            // This is a "Koch Snowflake" variant.
+            (
+                "F++F++F++F++F++F",
+                &[("F", "F-F++F-F")], // Standard Snowflake rule (cleaner than the pipe rule)
+                60.0,
+                3,
+                3,
+                3.0, // Needs distinct lines to look like crystals
+            )
+        }
+    };
+
+    // Top-left corner
     ltree::draw_ltree(
         display,
         accent_color,
-        LEFT_BAR_WIDTH * 2,
-        EPD_7IN3F_HEIGHT as u32,
-        seed,
+        100,
+        150,
+        axiom,
+        rules,
+        angle,
+        min_iter,
+        max_iter,
+        step_len,
+        &mut rng,
+    )
+    .ok();
+
+    // Bottom-right corner
+    ltree::draw_ltree(
+        display,
+        accent_color,
+        EPD_7IN3F_WIDTH as i32 - 100,
+        150,
+        axiom,
+        rules,
+        angle,
+        min_iter,
+        max_iter,
+        step_len,
+        &mut rng,
     )
     .ok();
 
@@ -328,9 +404,9 @@ pub fn draw_calendar_page(
     )
     .draw(display)?;
 
-    // Decorative line (with margins in the content area)
+    // Decorative line (with margins on both sides)
     Line::new(
-        Point::new(LEFT_BAR_WIDTH as i32 + BORDER_MARGIN, DECORATIVE_LINE_Y),
+        Point::new(BORDER_MARGIN, DECORATIVE_LINE_Y),
         Point::new(EPD_7IN3F_WIDTH as i32 - BORDER_MARGIN, DECORATIVE_LINE_Y),
     )
     .into_styled(PrimitiveStyle::with_stroke(accent_color, 2))
