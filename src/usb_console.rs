@@ -111,20 +111,19 @@ impl UsbConsole {
             // Feed watchdog while waiting for input
             ctx.watchdog.feed();
 
-            let mut buf = [0u8; 1];
+            let mut packet_buf = [0u8; MAX_PACKET_SIZE as usize];
 
             // Use select to either read a packet or timeout to feed watchdog
             // This prevents watchdog timeout during console inactivity
-            let c = loop {
+            let bytes_read = loop {
                 match embassy_futures::select::select(
-                    class.read_packet(&mut buf),
+                    class.read_packet(&mut packet_buf),
                     Timer::after(Duration::from_secs(4)),
                 )
                 .await
                 {
                     embassy_futures::select::Either::First(result) => {
-                        result?;
-                        break buf[0];
+                        break result?;
                     }
                     embassy_futures::select::Either::Second(_) => {
                         // Timeout - feed watchdog and try again
@@ -134,49 +133,52 @@ impl UsbConsole {
                 }
             };
 
-            // Echo the character
-            class.write_packet(&[c]).await?;
+            // Process all bytes in the packet
+            for &c in packet_buf.iter().take(bytes_read) {
+                // Echo the character
+                class.write_packet(&[c]).await?;
 
-            // Handle special characters
-            match c {
-                b'\r' | b'\n' => {
-                    // End of line - process command
-                    class.write_packet(b"\r\n").await?;
+                // Handle special characters
+                match c {
+                    b'\r' | b'\n' => {
+                        // End of line - process command
+                        class.write_packet(b"\r\n").await?;
 
-                    if self.read_pos > 0 {
-                        let cmd_str =
-                            core::str::from_utf8(&self.read_buf[..self.read_pos]).unwrap_or("");
-                        info!("Command: {}", cmd_str);
+                        if self.read_pos > 0 {
+                            let cmd_str =
+                                core::str::from_utf8(&self.read_buf[..self.read_pos]).unwrap_or("");
+                            info!("Command: {}", cmd_str);
 
-                        if let Some(cmd) = parse_command(cmd_str) {
-                            self.execute_command(class, ctx, cmd).await?;
-                        } else {
-                            self.write_line(class, "Unknown command. Type HELP for help.")
-                                .await?;
+                            if let Some(cmd) = parse_command(cmd_str) {
+                                self.execute_command(class, ctx, cmd).await?;
+                            } else {
+                                self.write_line(class, "Unknown command. Type HELP for help.")
+                                    .await?;
+                            }
+
+                            self.read_pos = 0;
                         }
 
-                        self.read_pos = 0;
+                        self.write_prompt(class).await?;
                     }
-
-                    self.write_prompt(class).await?;
-                }
-                0x08 | 0x7F => {
-                    // Backspace or DEL
-                    if self.read_pos > 0 {
-                        self.read_pos -= 1;
-                        // Move cursor back, print space, move back again
-                        class.write_packet(b"\x08 \x08").await?;
+                    0x08 | 0x7F => {
+                        // Backspace or DEL
+                        if self.read_pos > 0 {
+                            self.read_pos -= 1;
+                            // Move cursor back, print space, move back again
+                            class.write_packet(b"\x08 \x08").await?;
+                        }
                     }
-                }
-                _ if c.is_ascii_graphic() || c == b' ' => {
-                    // Printable character
-                    if self.read_pos < READ_BUF_SIZE {
-                        self.read_buf[self.read_pos] = c;
-                        self.read_pos += 1;
+                    _ if c.is_ascii_graphic() || c == b' ' => {
+                        // Printable character
+                        if self.read_pos < READ_BUF_SIZE {
+                            self.read_buf[self.read_pos] = c;
+                            self.read_pos += 1;
+                        }
                     }
-                }
-                _ => {
-                    // Ignore other characters
+                    _ => {
+                        // Ignore other characters
+                    }
                 }
             }
         }

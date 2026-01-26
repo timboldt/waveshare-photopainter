@@ -278,7 +278,12 @@ pub fn draw_ltree(
     // === PASS 1: Measurement ===
     // Run the L-system starting at (0, 0) to find the bounding box
     let mut measure_turtle = MeasureTurtle::new(pattern.step_length, pattern.angle);
-    measure_recursive(&mut measure_turtle, pattern.axiom, pattern.rules, pattern.iterations);
+    measure_recursive(
+        &mut measure_turtle,
+        pattern.axiom,
+        pattern.rules,
+        pattern.iterations,
+    );
 
     // Calculate the center of the bounding box
     let (bbox_center_x, bbox_center_y) = measure_turtle.bounds.center();
@@ -297,7 +302,12 @@ pub fn draw_ltree(
         pattern.step_length,
         pattern.angle,
     );
-    draw_recursive(&mut draw_turtle, pattern.axiom, pattern.rules, pattern.iterations);
+    draw_recursive(
+        &mut draw_turtle,
+        pattern.axiom,
+        pattern.rules,
+        pattern.iterations,
+    );
 
     Ok(())
 }

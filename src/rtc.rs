@@ -463,7 +463,8 @@ where
     #[allow(dead_code)]
     pub async fn disable_alarm(&mut self) -> Result<(), Error> {
         // Disable each alarm register by setting bit 7
-        // Write each register individually - the RTC doesn't support multi-byte writes to alarm registers
+        // Write each register individually - the RTC doesn't support multi-byte writes to alarm
+        // registers
         let mut alarm_regs = [0u8; 4];
         self.i2c
             .write_read_async(PCF85063_ADDRESS, [SECOND_ALARM_REG], &mut alarm_regs)

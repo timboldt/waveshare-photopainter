@@ -269,7 +269,14 @@ pub fn draw_calendar_page(
 
     // Draw L-system fractals in corners
     ltree::draw_ltree(display, accent_color, 100, 150, pattern).ok();
-    ltree::draw_ltree(display, accent_color, EPD_7IN3F_WIDTH as i32 - 100, 150, pattern).ok();
+    ltree::draw_ltree(
+        display,
+        accent_color,
+        EPD_7IN3F_WIDTH as i32 - 100,
+        150,
+        pattern,
+    )
+    .ok();
 
     // Day of week at top
     let dow_text = day_of_week_name(dow);
