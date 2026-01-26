@@ -207,8 +207,8 @@ fn month_name(month: u16) -> &'static str {
 
 /// Calculate day of week using Zeller's congruence (0 = Sunday)
 fn calculate_day_of_week(year: u16, month: u16, day: u16) -> u8 {
-    let mut y = year;
-    let mut m = month;
+    let mut y = year as i32;
+    let mut m = month as i32;
 
     // Adjust for Zeller's (March = 3, Feb = 14 of previous year)
     if m < 3 {
@@ -216,14 +216,15 @@ fn calculate_day_of_week(year: u16, month: u16, day: u16) -> u8 {
         y -= 1;
     }
 
-    let q = day;
+    let q = day as i32;
     let k = y % 100;
     let j = y / 100;
 
     let h = (q + ((13 * (m + 1)) / 5) + k + (k / 4) + (j / 4) - (2 * j)) % 7;
 
     // Convert Zeller's result (0=Saturday) to our format (0=Sunday)
-    ((h + 6) % 7) as u8
+    // Use rem_euclid to handle negative modulo correctly
+    ((h + 6).rem_euclid(7)) as u8
 }
 
 /// Calculate day of year (1-366)

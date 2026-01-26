@@ -60,40 +60,58 @@ fn bcd_to_dec(val: u8) -> u8 {
     ((val >> 4) * 10) + (val & 0x0F)
 }
 
+/// Return the number of days in a given month/year
+fn days_in_month(month: u16, year: u16) -> u16 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let is_leap =
+                (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
+            if is_leap {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 31, // Fallback
+    }
+}
+
 /// Add seconds to a time, handling overflow
 pub fn add_seconds_to_time(time: &TimeData, seconds_to_add: u32) -> TimeData {
     let mut result = *time;
 
-    result.seconds += seconds_to_add as u16;
+    // Perform arithmetic in u32 to avoid truncation
+    let total_seconds = result.seconds as u32 + seconds_to_add;
 
     // Handle seconds overflow
-    if result.seconds >= 60 {
-        result.minutes += result.seconds / 60;
-        result.seconds %= 60;
-    }
+    let additional_minutes = total_seconds / 60;
+    result.seconds = (total_seconds % 60) as u16;
 
     // Handle minutes overflow
-    if result.minutes >= 60 {
-        result.hours += result.minutes / 60;
-        result.minutes %= 60;
-    }
+    let total_minutes = result.minutes as u32 + additional_minutes;
+    let additional_hours = total_minutes / 60;
+    result.minutes = (total_minutes % 60) as u16;
 
     // Handle hours overflow
-    if result.hours >= 24 {
-        result.days += result.hours / 24;
-        result.hours %= 24;
-    }
+    let total_hours = result.hours as u32 + additional_hours;
+    let remaining_days = total_hours / 24;
+    result.hours = (total_hours % 24) as u16;
 
-    // Handle days overflow (simplified - doesn't account for month lengths)
-    // For short sleep durations this should be fine
-    if result.days > 31 {
-        result.months += result.days / 31;
-        result.days = ((result.days - 1) % 31) + 1;
-    }
-
-    if result.months > 12 {
-        result.years += result.months / 12;
-        result.months = ((result.months - 1) % 12) + 1;
+    // Handle days overflow using actual month lengths
+    result.days += remaining_days as u16;
+    loop {
+        let dim = days_in_month(result.months, result.years);
+        if result.days <= dim {
+            break;
+        }
+        result.days -= dim;
+        result.months += 1;
+        if result.months > 12 {
+            result.months = 1;
+            result.years += 1;
+        }
     }
 
     result
@@ -112,25 +130,8 @@ pub fn calculate_next_6am(current: &TimeData) -> TimeData {
     if current.hours >= 6 {
         alarm.days += 1;
 
-        // Get days in current month
-        let days_in_month = match alarm.months {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            2 => {
-                // Check for leap year
-                let is_leap = (alarm.years.is_multiple_of(4) && !alarm.years.is_multiple_of(100))
-                    || alarm.years.is_multiple_of(400);
-                if is_leap {
-                    29
-                } else {
-                    28
-                }
-            }
-            _ => 31, // Fallback
-        };
-
         // Handle month rollover
-        if alarm.days > days_in_month {
+        if alarm.days > days_in_month(alarm.months, alarm.years) {
             alarm.days = 1;
             alarm.months += 1;
 
@@ -384,19 +385,9 @@ where
     /// Enable alarm at specific time
     /// Matches the original Waveshare C implementation which writes each register individually
     pub async fn set_alarm(&mut self, alarm_time: &TimeData) -> Result<(), Error> {
-        // Enable alarm interrupt in Control_2
-        let mut ctrl2 = [0u8; 1];
-        self.i2c
-            .write_read_async(PCF85063_ADDRESS, [CONTROL_2_REG], &mut ctrl2)
-            .await
-            .map_err(Error::I2cError)?;
-
-        self.i2c
-            .write_async(PCF85063_ADDRESS, [CONTROL_2_REG, ctrl2[0] | 0x80])
-            .await
-            .map_err(Error::I2cError)?;
-
-        // Set alarm time - write each register individually, matching the C implementation
+        // Set alarm time first, before enabling the interrupt, to avoid a race
+        // where stale alarm values could trigger an interrupt.
+        // Write each register individually - the RTC doesn't support multi-byte writes.
         // Note: C code writes in order: DAY, HOUR, MINUTES, SECOND
         self.i2c
             .write_async(
@@ -436,6 +427,18 @@ where
             .await
             .map_err(Error::I2cError)?;
 
+        // Now enable alarm interrupt in Control_2
+        let mut ctrl2 = [0u8; 1];
+        self.i2c
+            .write_read_async(PCF85063_ADDRESS, [CONTROL_2_REG], &mut ctrl2)
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(PCF85063_ADDRESS, [CONTROL_2_REG, ctrl2[0] | 0x80])
+            .await
+            .map_err(Error::I2cError)?;
+
         Ok(())
     }
 
@@ -460,6 +463,7 @@ where
     #[allow(dead_code)]
     pub async fn disable_alarm(&mut self) -> Result<(), Error> {
         // Disable each alarm register by setting bit 7
+        // Write each register individually - the RTC doesn't support multi-byte writes to alarm registers
         let mut alarm_regs = [0u8; 4];
         self.i2c
             .write_read_async(PCF85063_ADDRESS, [SECOND_ALARM_REG], &mut alarm_regs)
@@ -467,16 +471,22 @@ where
             .map_err(Error::I2cError)?;
 
         self.i2c
-            .write_async(
-                PCF85063_ADDRESS,
-                [
-                    SECOND_ALARM_REG,
-                    alarm_regs[0] | 0x80,
-                    alarm_regs[1] | 0x80,
-                    alarm_regs[2] | 0x80,
-                    alarm_regs[3] | 0x80,
-                ],
-            )
+            .write_async(PCF85063_ADDRESS, [SECOND_ALARM_REG, alarm_regs[0] | 0x80])
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(PCF85063_ADDRESS, [MINUTES_ALARM_REG, alarm_regs[1] | 0x80])
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(PCF85063_ADDRESS, [HOUR_ALARM_REG, alarm_regs[2] | 0x80])
+            .await
+            .map_err(Error::I2cError)?;
+
+        self.i2c
+            .write_async(PCF85063_ADDRESS, [DAY_ALARM_REG, alarm_regs[3] | 0x80])
             .await
             .map_err(Error::I2cError)?;
 

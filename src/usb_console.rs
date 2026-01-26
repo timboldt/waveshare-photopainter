@@ -264,15 +264,15 @@ impl UsbConsole {
                     return Ok(());
                 }
 
+                // Clear any existing alarm flag before setting new alarm
+                let _ = ctx.rtc.clear_alarm_flag().await;
+
                 // Set RTC alarm
                 if ctx.rtc.set_alarm(&alarm_time).await.is_err() {
                     self.write_line(class, "ERROR: Failed to set RTC alarm")
                         .await?;
                     return Ok(());
                 }
-
-                // Clear any existing alarm flag
-                let _ = ctx.rtc.clear_alarm_flag().await;
 
                 // Small delay to ensure message is sent
                 Timer::after(Duration::from_millis(100)).await;
