@@ -26,7 +26,4 @@ fn main() {
 
     // Set as environment variable for compile-time inclusion
     println!("cargo:rustc-env=BUILD_DATE={}", build_date);
-
-    // Rerun if build.rs changes
-    println!("cargo:rerun-if-changed=build.rs");
 }
