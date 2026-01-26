@@ -155,6 +155,7 @@ pub enum Error {
     Timeout,
     #[allow(dead_code)]
     I2cError(i2c::Error),
+    InvalidInput,
 }
 
 pub struct Pcf85063<I2C: embassy_rp::i2c::Instance + 'static> {
@@ -228,7 +229,7 @@ where
     #[allow(dead_code)]
     pub async fn set_timer(&mut self, seconds: u8) -> Result<(), Error> {
         if seconds == 0 {
-            return Err(Error::Timeout); // Use Timeout as generic error
+            return Err(Error::InvalidInput);
         }
 
         // Disable timer first
@@ -326,7 +327,7 @@ where
 
         // Validate year is in valid range for RTC (0-99)
         if years > 99 {
-            return Err(Error::Timeout); // Use Timeout as generic error
+            return Err(Error::InvalidInput);
         }
 
         // Write each register individually, matching the C implementation

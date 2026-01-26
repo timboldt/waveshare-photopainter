@@ -165,7 +165,7 @@ When powered via USB, the device enters console mode with the following commands
 ### Memory Layout
 The display buffer is **190,800 bytes** (800x480 pixels, 4 bits per pixel) and is allocated as a static mutable:
 ```rust
-static mut DISPLAY_BUF: DisplayBuffer = DisplayBuffer { frame_buffer: [0xFF; 800 * 480 / 2] };
+static mut DISPLAY_BUF: DisplayBuffer = DisplayBuffer { frame_buffer: [0x11; 800 * 480 / 2] };
 ```
 
 ### Critical Sections
